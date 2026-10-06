@@ -497,7 +497,7 @@ export default function App() {
               }
             }
           }}
-          className="relative group min-h-[84vh] flex items-end overflow-hidden bg-[#231F1C]"
+          className="relative group bg-[#1C1815] lg:bg-[#231F1C] lg:min-h-[84vh] lg:flex lg:items-end overflow-hidden"
         >
           <input
             ref={heroFileInputRef}
@@ -520,21 +520,26 @@ export default function App() {
             aria-label="Upload permanent hero background image"
           />
 
-          <div className="absolute inset-0">
+          {/* Hero Artwork Stage: Natural panoramic framing on mobile/tablet so moon, face & flowers stay balanced; full-bleed on desktop */}
+          <div className="relative w-full aspect-[1.85/1] sm:aspect-[2/1] lg:aspect-auto lg:absolute lg:inset-0 lg:h-full overflow-hidden">
             <StaticCulinaryImage
               src={heroImageUrl}
               alt="The Shangaas Cafe dining room"
-              className="w-full h-full object-cover"
+              className="w-full h-full object-cover object-[52%_42%] sm:object-[52%_46%] lg:object-center"
             />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/45 to-black/20" />
+            {/* Desktop overlay (unchanged) */}
+            <div className="hidden lg:block absolute inset-0 bg-gradient-to-t from-black/85 via-black/45 to-black/20" />
+            {/* Mobile & tablet subtle top vignette and seamless bottom transition into the text canvas */}
+            <div className="lg:hidden absolute inset-x-0 top-0 h-12 bg-gradient-to-b from-black/30 to-transparent pointer-events-none" />
+            <div className="lg:hidden absolute inset-x-0 bottom-0 h-20 sm:h-24 bg-gradient-to-t from-[#1C1815] via-[#1C1815]/55 to-transparent pointer-events-none" />
           </div>
 
-          <div className="absolute top-6 right-6 z-20 flex items-center gap-2 opacity-85 hover:opacity-100 transition-opacity">
+          <div className="absolute top-3 right-3 sm:top-5 sm:right-6 lg:top-6 lg:right-6 z-20 flex items-center gap-2 opacity-85 hover:opacity-100 transition-opacity">
             <button
               type="button"
               disabled={isUploadingHero}
               onClick={() => heroFileInputRef.current?.click()}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium bg-[#FAF7F2]/90 text-[#231F1C] rounded-lg shadow-sm hover:bg-white transition-colors whitespace-nowrap cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 sm:px-3.5 sm:py-2 text-[11px] sm:text-xs font-medium bg-[#FAF7F2]/90 text-[#231F1C] rounded-lg shadow-sm hover:bg-white transition-colors whitespace-nowrap cursor-pointer"
             >
               {isUploadingHero ? (
                 <>
@@ -545,49 +550,49 @@ export default function App() {
                 </>
               ) : (
                 <>
-                  <Upload className="w-3.5 h-3.5 text-[#7E5A3B]" />
+                  <Upload className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-[#7E5A3B]" />
                   <span>Replace Hero Image</span>
                 </>
               )}
             </button>
           </div>
 
-          <div className="relative z-10 w-full max-w-[1360px] mx-auto px-6 sm:px-10 lg:px-14 pb-16 sm:pb-24 pt-32">
+          <div className="relative z-10 w-full max-w-[1360px] mx-auto px-5 sm:px-10 lg:px-14 -mt-3 sm:-mt-5 lg:mt-0 pt-0 lg:pt-32 pb-8 sm:pb-14 lg:pb-24">
             <motion.div
               initial={{ opacity: 0, y: 24 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.9, ease: [0.16, 1, 0.3, 1] }}
               className="max-w-3xl"
             >
-              <p className="text-xs sm:text-sm text-[#E6D7C3] tracking-wide mb-4">
+              <p className="text-[11px] sm:text-xs lg:text-sm text-[#E6D7C3] tracking-wide mb-2 sm:mb-3 lg:mb-4">
                 The Shangaas Cafe · Signature Food &amp; Beverages
               </p>
 
-              <h1 className="font-display text-4xl sm:text-6xl lg:text-7xl text-[#FAF7F2] font-normal leading-[1.06] tracking-tight mb-6 [text-wrap:balance]">
+              <h1 className="font-display text-[32px] sm:text-5xl md:text-6xl lg:text-7xl text-[#FAF7F2] font-normal leading-[1.08] lg:leading-[1.06] tracking-tight mb-3 sm:mb-5 lg:mb-6 [text-wrap:balance]">
                 The Shangaas Cafe
               </h1>
 
-              <p className="text-base sm:text-lg text-[#EAE2D6] leading-relaxed max-w-2xl mb-10">
+              <p className="text-[13.5px] sm:text-base lg:text-lg text-[#EAE2D6] leading-[1.55] sm:leading-relaxed max-w-2xl mb-5 sm:mb-8 lg:mb-10">
                 Where every bite tells a story of flavour and comfort.
                 <br />
                 Freshly prepared favourites, delicious sips, and moments worth savouring.
               </p>
 
-              <div className="flex flex-wrap items-center gap-4">
+              <div className="flex flex-wrap items-center gap-2.5 sm:gap-4">
                 <a
                   href="#signatures"
-                  className="inline-flex items-center gap-2.5 px-6 py-3.5 text-xs sm:text-sm font-medium bg-[#FAF7F2] text-[#231F1C] rounded-lg hover:bg-[#EFE9DF] transition-colors whitespace-nowrap"
+                  className="inline-flex items-center gap-1.5 sm:gap-2.5 px-3.5 py-2.5 sm:px-6 sm:py-3.5 text-[11.5px] sm:text-sm font-medium bg-[#FAF7F2] text-[#231F1C] rounded-lg hover:bg-[#EFE9DF] transition-colors whitespace-nowrap"
                 >
                   <span>Explore Signature Collection</span>
-                  <ArrowDown className="w-4 h-4 text-[#7E5A3B]" />
+                  <ArrowDown className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#7E5A3B]" />
                 </a>
 
                 <a
                   href="#menu"
-                  className="inline-flex items-center gap-2 px-6 py-3.5 text-xs sm:text-sm font-medium text-[#FAF7F2] border border-[#FAF7F2]/35 rounded-lg hover:bg-white/10 transition-colors whitespace-nowrap"
+                  className="inline-flex items-center gap-1.5 sm:gap-2 px-3.5 py-2.5 sm:px-6 sm:py-3.5 text-[11.5px] sm:text-sm font-medium text-[#FAF7F2] border border-[#FAF7F2]/35 rounded-lg hover:bg-white/10 transition-colors whitespace-nowrap"
                 >
                   <span>View Original Menu</span>
-                  <ArrowUpRight className="w-4 h-4" />
+                  <ArrowUpRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                 </a>
               </div>
             </motion.div>
