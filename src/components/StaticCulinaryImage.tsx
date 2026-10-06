@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Utensils } from 'lucide-react';
 
 interface StaticCulinaryImageProps {
@@ -15,6 +15,10 @@ export const StaticCulinaryImage: React.FC<StaticCulinaryImageProps> = ({
   subtitle = 'The Shangaas Kitchen',
 }) => {
   const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    setHasError(false);
+  }, [src]);
 
   if (hasError || !src) {
     return (

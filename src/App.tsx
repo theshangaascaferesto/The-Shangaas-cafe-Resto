@@ -11,9 +11,11 @@ import {
   RotateCcw,
   Upload,
   ImagePlus,
+  Loader2,
   X,
 } from 'lucide-react';
 import {
+  INITIAL_HERO_IMAGE_URL,
   INITIAL_SIGNATURE_ITEMS,
   INITIAL_GALLERY_ITEMS,
   ORIGINAL_MENU_CATEGORIES,
@@ -35,6 +37,9 @@ import {
 const GALLERY_STORAGE_KEY = 'shangaas_cafe_gallery_items_v3';
 
 export default function App() {
+  const [heroImageUrl, setHeroImageUrl] = useState<string>(INITIAL_HERO_IMAGE_URL);
+  const [isUploadingHero, setIsUploadingHero] = useState<boolean>(false);
+  const [heroUploadPct, setHeroUploadPct] = useState<number>(0);
   const [signatureItems, setSignatureItems] = useState<SignatureItem[]>(INITIAL_SIGNATURE_ITEMS);
   const [verifiedFiles, setVerifiedFiles] = useState<
     Record<string, { exists: boolean; filePath: string; publicUrl: string; sizeBytes: number }>
@@ -65,6 +70,7 @@ export default function App() {
   const [contactEmail, setContactEmail] = useState('');
   const [contactMessage, setContactMessage] = useState('');
 
+  const heroFileInputRef = useRef<HTMLInputElement>(null);
   const gallerySlotUploadRef = useRef<HTMLInputElement>(null);
   const galleryBatchUploadRef = useRef<HTMLInputElement>(null);
 
@@ -133,6 +139,23 @@ export default function App() {
 
           // 3. If any file is missing on server disk after a container restart, restore it from IDB backup
           let restoredAny = false;
+          const heroIdbRecord = await getSignatureFileFromIdb('hero');
+          if (
+            heroIdbRecord &&
+            (!currentVerified['hero']?.exists ||
+              currentVerified['hero']?.fileName === 'hero_shangaas_cafe_1791188557404.jpg')
+          ) {
+            const uploadedHero = await uploadSignatureFileChunked(
+              'hero',
+              heroIdbRecord.blob,
+              heroIdbRecord.fileName,
+              heroIdbRecord.mimeType
+            );
+            if (uploadedHero) {
+              restoredAny = true;
+            }
+          }
+
           for (const item of INITIAL_SIGNATURE_ITEMS) {
             if (!currentVerified[item.id]?.exists) {
               const idbRecord = await getSignatureFileFromIdb(item.id);
@@ -156,6 +179,9 @@ export default function App() {
           if (isMounted && finalData?.assets && typeof finalData.assets === 'object') {
             if (finalData.verifiedFiles) {
               setVerifiedFiles(finalData.verifiedFiles);
+            }
+            if (finalData.assets['hero']) {
+              setHeroImageUrl(finalData.assets['hero']);
             }
             setSignatureItems((prev) =>
               prev.map((item) => ({
@@ -200,9 +226,13 @@ export default function App() {
       );
       if (result && result.assetPath) {
         const displayUrl = `${result.assetPath}?v=${Date.now()}`;
-        setSignatureItems((prev) =>
-          prev.map((item) => (item.id === id ? { ...item, gifUrl: displayUrl } : item))
-        );
+        if (id === 'hero') {
+          setHeroImageUrl(displayUrl);
+        } else {
+          setSignatureItems((prev) =>
+            prev.map((item) => (item.id === id ? { ...item, gifUrl: displayUrl } : item))
+          );
+        }
         setVerifiedFiles((prev) => ({
           ...prev,
           [id]: {
@@ -451,14 +481,75 @@ export default function App() {
 
       <main id="top" className="flex-1">
         {/* HERO SECTION */}
-        <section className="relative min-h-[84vh] flex items-end overflow-hidden bg-[#231F1C]">
+        <section
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={async (e) => {
+            e.preventDefault();
+            const file = e.dataTransfer.files?.[0];
+            if (file && file.type.startsWith('image/')) {
+              setIsUploadingHero(true);
+              setHeroUploadPct(0);
+              try {
+                await handleUploadSignatureFile('hero', file, (pct) => setHeroUploadPct(pct));
+              } finally {
+                setIsUploadingHero(false);
+                setHeroUploadPct(0);
+              }
+            }
+          }}
+          className="relative group min-h-[84vh] flex items-end overflow-hidden bg-[#231F1C]"
+        >
+          <input
+            ref={heroFileInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/gif,image/*"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              e.target.value = '';
+              setIsUploadingHero(true);
+              setHeroUploadPct(0);
+              try {
+                await handleUploadSignatureFile('hero', file, (pct) => setHeroUploadPct(pct));
+              } finally {
+                setIsUploadingHero(false);
+                setHeroUploadPct(0);
+              }
+            }}
+            className="hidden"
+            aria-label="Upload permanent hero background image"
+          />
+
           <div className="absolute inset-0">
             <StaticCulinaryImage
-              src="/src/assets/images/hero_shangaas_cafe_1791188557404.jpg"
+              src={heroImageUrl}
               alt="The Shangaas Cafe dining room"
               className="w-full h-full object-cover"
             />
             <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/45 to-black/20" />
+          </div>
+
+          <div className="absolute top-6 right-6 z-20 flex items-center gap-2 opacity-85 hover:opacity-100 transition-opacity">
+            <button
+              type="button"
+              disabled={isUploadingHero}
+              onClick={() => heroFileInputRef.current?.click()}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium bg-[#FAF7F2]/90 text-[#231F1C] rounded-lg shadow-sm hover:bg-white transition-colors whitespace-nowrap cursor-pointer"
+            >
+              {isUploadingHero ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>
+                    Saving Hero Image{heroUploadPct > 0 ? ` (${heroUploadPct}%)` : '...'}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Upload className="w-3.5 h-3.5 text-[#7E5A3B]" />
+                  <span>Replace Hero Image</span>
+                </>
+              )}
+            </button>
           </div>
 
           <div className="relative z-10 w-full max-w-[1360px] mx-auto px-6 sm:px-10 lg:px-14 pb-16 sm:pb-24 pt-32">
@@ -477,8 +568,9 @@ export default function App() {
               </h1>
 
               <p className="text-base sm:text-lg text-[#EAE2D6] leading-relaxed max-w-2xl mb-10">
-                Experience our four signature animated presentations alongside our complete
-                36-category original kitchen and beverage menu.
+                Where every bite tells a story of flavour and comfort.
+                <br />
+                Freshly prepared favourites, delicious sips, and moments worth savouring.
               </p>
 
               <div className="flex flex-wrap items-center gap-4">

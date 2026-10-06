@@ -1,5 +1,9 @@
 import signatureAssets from './signatureAssets.json';
 
+export const INITIAL_HERO_IMAGE_URL: string =
+  (signatureAssets as Record<string, string>)['hero'] ||
+  '/src/assets/images/hero_shangaas_cafe_1791188557404.jpg';
+
 export const ORIGINAL_MENU_CATEGORIES = [
   'Mocktails',
   'Appetizers',

@@ -19,6 +19,7 @@ const SIGNATURE_ASSETS_JSON_PATH = path.join(__dirname, 'src', 'data', 'signatur
 const SIGNATURES_ASSETS_DIR = path.join(__dirname, 'src', 'assets', 'images');
 
 const SIGNATURE_SLUGS: Record<string, string> = {
+  hero: 'hero-shangaas-cafe',
   'sig-1': 'beetroot-spinach-momos',
   'sig-2': 'signature-mocktails',
   'sig-3': 'makki-ki-roti-sarson-ka-saag',
@@ -26,11 +27,14 @@ const SIGNATURE_SLUGS: Record<string, string> = {
 };
 
 const SIGNATURE_KEYWORDS: Record<string, string[]> = {
+  hero: ['hero-shangaas-cafe', 'hero_background', 'hero-background', 'cafe-hero'],
   'sig-1': ['beetroot', 'spinach', 'momo'],
   'sig-2': ['mocktail'],
   'sig-3': ['makki', 'sarson', 'saag'],
   'sig-4': ['siddu', 'himachali'],
 };
+
+const LEGACY_AI_HERO_FILE = 'hero_shangaas_cafe_1791188557404.jpg';
 
 const ALLOWED_EXTS = ['gif', 'png', 'jpg', 'jpeg', 'webp', 'avif', 'svg'];
 
@@ -49,6 +53,7 @@ function syncAndReadSignatureAssets(): {
 } {
   ensureDirectories();
   const assets: Record<string, string> = {
+    hero: `/src/assets/images/${LEGACY_AI_HERO_FILE}`,
     'sig-1': '',
     'sig-2': '',
     'sig-3': '',
@@ -100,7 +105,7 @@ function syncAndReadSignatureAssets(): {
       }
     }
 
-    // 2. If not found under exact slug, check if a real file in /src/assets/images/ matches this dish's keywords
+    // 2. If not found under exact slug, check if a real file in /src/assets/images/ matches this item
     if (!foundFileName) {
       const keywords = SIGNATURE_KEYWORDS[id] || [];
       for (const entry of dirEntries) {
@@ -109,13 +114,26 @@ function syncAndReadSignatureAssets(): {
         if (!ALLOWED_EXTS.includes(ext)) continue;
         // Skip unrelated existing cafe images
         if (
-          lower.startsWith('hero_shangaas_cafe') ||
+          lower === LEGACY_AI_HERO_FILE ||
           lower.startsWith('story_cafe_craft') ||
           lower.startsWith('menu_')
         ) {
           continue;
         }
-        if (keywords.some((kw) => lower.includes(kw))) {
+        const isKnownSignatureSlug = Object.values(SIGNATURE_SLUGS).some(
+          (s) => s !== slug && lower.startsWith(s)
+        );
+        if (isKnownSignatureSlug) continue;
+
+        const matchesKeyword = keywords.some((kw) => lower.includes(kw));
+        // If id === 'hero' and user dropped any new custom image into /src/assets/images/ that isn't a signature dish
+        const isNewCustomHeroImage =
+          id === 'hero' &&
+          !Object.values(SIGNATURE_KEYWORDS)
+            .flat()
+            .some((kw) => lower.includes(kw));
+
+        if (matchesKeyword || isNewCustomHeroImage) {
           const fullPath = path.join(SIGNATURES_ASSETS_DIR, entry);
           const stat = fs.statSync(fullPath);
           if (stat.isFile() && stat.size > 0) {
@@ -125,10 +143,32 @@ function syncAndReadSignatureAssets(): {
             if (fullPath !== canonicalPath) {
               fs.copyFileSync(fullPath, canonicalPath);
             }
+            if (id === 'hero') {
+              try {
+                fs.copyFileSync(
+                  canonicalPath,
+                  path.join(SIGNATURES_ASSETS_DIR, LEGACY_AI_HERO_FILE)
+                );
+              } catch {
+                // ignore
+              }
+            }
             foundFileName = canonicalName;
             foundSize = stat.size;
             break;
           }
+        }
+      }
+    }
+
+    // 3. Fallback for hero if hero-shangaas-cafe.<ext> has not been uploaded yet
+    if (!foundFileName && id === 'hero') {
+      const legacyHeroPath = path.join(SIGNATURES_ASSETS_DIR, LEGACY_AI_HERO_FILE);
+      if (fs.existsSync(legacyHeroPath)) {
+        const stat = fs.statSync(legacyHeroPath);
+        if (stat.isFile() && stat.size > 0) {
+          foundFileName = LEGACY_AI_HERO_FILE;
+          foundSize = stat.size;
         }
       }
     }
@@ -319,6 +359,17 @@ async function startServer() {
       if (chunkIndex + 1 === totalChunks) {
         removeOtherExtensions(slug, finalFilePath);
         fs.renameSync(partPath, finalFilePath);
+
+        if (id === 'hero') {
+          try {
+            fs.copyFileSync(
+              finalFilePath,
+              path.join(SIGNATURES_ASSETS_DIR, LEGACY_AI_HERO_FILE)
+            );
+          } catch {
+            // ignore
+          }
+        }
 
         const { assets, verifiedFiles } = syncAndReadSignatureAssets();
         const stableAssetPath = `/src/assets/images/${finalFileName}`;
