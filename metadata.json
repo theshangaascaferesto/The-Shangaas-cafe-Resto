@@ -1,0 +1,6 @@
+{
+  "name": "The Shangaas Cafe",
+  "description": "A serene, cinematic culinary sanctuary showcasing The Shangaas Cafe's four animated signature creations, artisan kitchen menu, heritage story, and table reservations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
