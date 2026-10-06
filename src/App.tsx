@@ -25,25 +25,20 @@ import { StaticMenuSection } from './components/StaticMenuSection';
 import { StaticCulinaryImage } from './components/StaticCulinaryImage';
 import { ReviewsSection } from './components/ReviewsSection';
 import { OrderDrawer, ReservationModal, OrderItem } from './components/HospitalityDrawers';
+import {
+  getSignatureFileFromIdb,
+  removeSignatureFileFromIdb,
+  saveSignatureFileToIdb,
+  uploadSignatureFileChunked,
+} from './utils/signatureStorage';
 
-const STORAGE_KEY = 'shangaas_cafe_signature_items_v3';
 const GALLERY_STORAGE_KEY = 'shangaas_cafe_gallery_items_v3';
 
 export default function App() {
-  const [signatureItems, setSignatureItems] = useState<SignatureItem[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length === 4) {
-          return parsed;
-        }
-      }
-    } catch {
-      // Fallback to initial signature items
-    }
-    return INITIAL_SIGNATURE_ITEMS;
-  });
+  const [signatureItems, setSignatureItems] = useState<SignatureItem[]>(INITIAL_SIGNATURE_ITEMS);
+  const [verifiedFiles, setVerifiedFiles] = useState<
+    Record<string, { exists: boolean; filePath: string; publicUrl: string; sizeBytes: number }>
+  >({});
 
   const [galleryItems, setGalleryItems] = useState<GalleryItem[]>(() => {
     try {
@@ -73,13 +68,113 @@ export default function App() {
   const gallerySlotUploadRef = useRef<HTMLInputElement>(null);
   const galleryBatchUploadRef = useRef<HTMLInputElement>(null);
 
+  // Load permanent signature asset paths from project repository (/src/data/signatureAssets.json)
+  // and ensure actual uploaded files exist physically inside /public/assets/signatures/
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(signatureItems));
-    } catch {
-      // Ignore storage quota issues
+    let isMounted = true;
+
+    async function syncPermanentSignatureAssets() {
+      try {
+        // 1. Migrate any legacy localStorage signature images into physical /public/assets/signatures/ files
+        const legacyKeys = [
+          'shangaas_cafe_signature_items_v3',
+          'shangaas_cafe_signature_items_v2',
+          'shangaas_cafe_signature_items_v1',
+          'shangaas_cafe_signature_items',
+        ];
+        for (const key of legacyKeys) {
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            let allSaved = true;
+            try {
+              const parsed = JSON.parse(raw);
+              if (Array.isArray(parsed)) {
+                for (const legacyItem of parsed) {
+                  if (
+                    legacyItem?.id &&
+                    typeof legacyItem.gifUrl === 'string' &&
+                    legacyItem.gifUrl.startsWith('data:image/')
+                  ) {
+                    const res = await fetch(legacyItem.gifUrl);
+                    const blob = await res.blob();
+                    const uploaded = await uploadSignatureFileChunked(
+                      legacyItem.id,
+                      blob,
+                      `${legacyItem.id}.${blob.type.split('/')[1] || 'gif'}`,
+                      blob.type || 'image/gif'
+                    );
+                    if (uploaded) {
+                      await saveSignatureFileToIdb(
+                        legacyItem.id,
+                        blob,
+                        `${legacyItem.id}.${blob.type.split('/')[1] || 'gif'}`,
+                        blob.type || 'image/gif'
+                      );
+                    } else {
+                      allSaved = false;
+                    }
+                  }
+                }
+              }
+            } catch {
+              allSaved = false;
+            }
+            if (allSaved) {
+              localStorage.removeItem(key);
+            }
+          }
+        }
+
+        // 2. Check current physical files in /public/assets/signatures/
+        const checkRes = await fetch('/api/signature-assets');
+        if (checkRes.ok) {
+          const checkData = await checkRes.json();
+          const currentVerified = checkData?.verifiedFiles || {};
+
+          // 3. If any file is missing on server disk after a container restart, restore it from IDB backup
+          let restoredAny = false;
+          for (const item of INITIAL_SIGNATURE_ITEMS) {
+            if (!currentVerified[item.id]?.exists) {
+              const idbRecord = await getSignatureFileFromIdb(item.id);
+              if (idbRecord) {
+                const uploaded = await uploadSignatureFileChunked(
+                  item.id,
+                  idbRecord.blob,
+                  idbRecord.fileName,
+                  idbRecord.mimeType
+                );
+                if (uploaded) {
+                  restoredAny = true;
+                }
+              }
+            }
+          }
+
+          const finalRes = restoredAny ? await fetch('/api/signature-assets') : checkRes;
+          const finalData = restoredAny && finalRes.ok ? await finalRes.json() : checkData;
+
+          if (isMounted && finalData?.assets && typeof finalData.assets === 'object') {
+            if (finalData.verifiedFiles) {
+              setVerifiedFiles(finalData.verifiedFiles);
+            }
+            setSignatureItems((prev) =>
+              prev.map((item) => ({
+                ...item,
+                gifUrl: finalData.assets[item.id] || '',
+              }))
+            );
+          }
+        }
+      } catch {
+        // Fallback to static import from signatureAssets.json
+      }
     }
-  }, [signatureItems]);
+
+    syncPermanentSignatureAssets();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -89,10 +184,71 @@ export default function App() {
     }
   }, [galleryItems]);
 
-  const handleUpdateGif = (id: string, newGifUrl: string) => {
-    setSignatureItems((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, gifUrl: newGifUrl } : item))
-    );
+  const handleUploadSignatureFile = async (
+    id: string,
+    file: File,
+    onProgress?: (pct: number) => void
+  ) => {
+    try {
+      await saveSignatureFileToIdb(id, file, file.name, file.type || 'image/gif');
+      const result = await uploadSignatureFileChunked(
+        id,
+        file,
+        file.name,
+        file.type || 'image/gif',
+        onProgress
+      );
+      if (result && result.assetPath) {
+        const displayUrl = `${result.assetPath}?v=${Date.now()}`;
+        setSignatureItems((prev) =>
+          prev.map((item) => (item.id === id ? { ...item, gifUrl: displayUrl } : item))
+        );
+        setVerifiedFiles((prev) => ({
+          ...prev,
+          [id]: {
+            exists: true,
+            filePath: result.filePath,
+            publicUrl: result.assetPath,
+            sizeBytes: result.sizeBytes,
+          },
+        }));
+      }
+    } catch (err) {
+      console.error('Failed to upload signature file to repository:', err);
+    }
+  };
+
+  const handleUpdateGif = async (id: string, newGifInput: string) => {
+    try {
+      if (!newGifInput) {
+        await removeSignatureFileFromIdb(id);
+      }
+      const isDataUrl = newGifInput.startsWith('data:image/');
+      const res = await fetch('/api/signature-assets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id,
+          dataUrl: isDataUrl ? newGifInput : undefined,
+          externalUrl: !isDataUrl && newGifInput ? newGifInput : undefined,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const permanentPath = data.assetPath || '';
+        if (data.verifiedFiles) {
+          setVerifiedFiles(data.verifiedFiles);
+        }
+        const displayUrl = permanentPath
+          ? `${permanentPath}?v=${Date.now()}`
+          : '';
+        setSignatureItems((prev) =>
+          prev.map((item) => (item.id === id ? { ...item, gifUrl: displayUrl } : item))
+        );
+      }
+    } catch (err) {
+      console.error('Failed to persist signature asset:', err);
+    }
   };
 
   const handleUpdateDetails = (id: string, updates: Partial<SignatureItem>) => {
@@ -101,9 +257,10 @@ export default function App() {
     );
   };
 
-  const handleResetAllSignatures = () => {
-    setSignatureItems(INITIAL_SIGNATURE_ITEMS);
-    localStorage.removeItem(STORAGE_KEY);
+  const handleResetAllSignatures = async () => {
+    for (const item of INITIAL_SIGNATURE_ITEMS) {
+      await handleUpdateGif(item.id, '');
+    }
   };
 
   const handleTriggerGallerySlotUpload = (e: React.MouseEvent, slotId: string) => {
@@ -437,6 +594,8 @@ export default function App() {
                 key={item.id}
                 item={item}
                 index={idx}
+                verifiedFilePath={verifiedFiles[item.id]?.filePath}
+                onUploadFile={handleUploadSignatureFile}
                 onUpdateGif={handleUpdateGif}
                 onUpdateDetails={handleUpdateDetails}
                 onAddToOrder={handleAddToOrder}

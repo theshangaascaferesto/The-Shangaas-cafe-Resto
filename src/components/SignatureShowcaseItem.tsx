@@ -1,12 +1,14 @@
 import React, { useRef, useState } from 'react';
 import { motion, useScroll, useTransform } from 'motion/react';
-import { Upload, Link2, ArrowUpRight, Check, RotateCcw } from 'lucide-react';
+import { Upload, Link2, ArrowUpRight, Check, RotateCcw, Loader2 } from 'lucide-react';
 import { SignatureItem } from '../data/cafeData';
 
 interface SignatureShowcaseItemProps {
   item: SignatureItem;
   index: number;
-  onUpdateGif: (id: string, newGifUrl: string) => void;
+  verifiedFilePath?: string;
+  onUploadFile: (id: string, file: File, onProgress?: (pct: number) => void) => Promise<void>;
+  onUpdateGif: (id: string, newGifUrl: string) => Promise<void> | void;
   onUpdateDetails: (id: string, updates: Partial<SignatureItem>) => void;
   onAddToOrder: (item: { id: string; name: string; price: number; category: string }) => void;
   onReserveWithDish: (dishName: string) => void;
@@ -15,6 +17,8 @@ interface SignatureShowcaseItemProps {
 export const SignatureShowcaseItem: React.FC<SignatureShowcaseItemProps> = ({
   item,
   index,
+  verifiedFilePath,
+  onUploadFile,
   onUpdateGif,
   onAddToOrder,
   onReserveWithDish,
@@ -25,6 +29,8 @@ export const SignatureShowcaseItem: React.FC<SignatureShowcaseItemProps> = ({
   const [urlDraft, setUrlDraft] = useState(item.gifUrl);
   const [addedFeedback, setAddedFeedback] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [isSavingAsset, setIsSavingAsset] = useState(false);
+  const [uploadPercent, setUploadPercent] = useState<number>(0);
 
   const isEven = index % 2 === 0;
 
@@ -38,17 +44,23 @@ export const SignatureShowcaseItem: React.FC<SignatureShowcaseItemProps> = ({
   const mediaScale = useTransform(scrollYProgress, [0, 0.35, 0.7, 1], [0.95, 1, 1, 0.98]);
   const contentY = useTransform(scrollYProgress, [0, 0.5, 1], [24, 0, -18]);
 
+  const processSelectedFile = async (file: File) => {
+    setIsSavingAsset(true);
+    setUploadPercent(0);
+    try {
+      await onUploadFile(item.id, file, (pct) => setUploadPercent(pct));
+    } finally {
+      setIsSavingAsset(false);
+      setUploadPercent(0);
+      setShowUrlInput(false);
+    }
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        onUpdateGif(item.id, reader.result);
-      }
-    };
-    reader.readAsDataURL(file);
-    setShowUrlInput(false);
+    processSelectedFile(file);
+    e.target.value = '';
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
@@ -56,21 +68,20 @@ export const SignatureShowcaseItem: React.FC<SignatureShowcaseItemProps> = ({
     setIsDraggingOver(false);
     const file = e.dataTransfer.files?.[0];
     if (file && file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          onUpdateGif(item.id, reader.result);
-        }
-      };
-      reader.readAsDataURL(file);
+      processSelectedFile(file);
     }
   };
 
-  const handleUrlSubmit = (e: React.FormEvent) => {
+  const handleUrlSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (urlDraft.trim()) {
-      onUpdateGif(item.id, urlDraft.trim());
-      setShowUrlInput(false);
+      setIsSavingAsset(true);
+      try {
+        await onUpdateGif(item.id, urlDraft.trim());
+      } finally {
+        setIsSavingAsset(false);
+        setShowUrlInput(false);
+      }
     }
   };
 
@@ -110,10 +121,10 @@ export const SignatureShowcaseItem: React.FC<SignatureShowcaseItemProps> = ({
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/gif,image/webp,image/*"
+              accept="image/gif,image/webp,image/png,image/jpeg,image/*"
               onChange={handleFileChange}
               className="hidden"
-              aria-label={`Upload animated GIF or image for ${item.name}`}
+              aria-label={`Upload permanent image or GIF for ${item.name}`}
             />
 
             <div
@@ -137,18 +148,33 @@ export const SignatureShowcaseItem: React.FC<SignatureShowcaseItemProps> = ({
                     referrerPolicy="no-referrer"
                     className="w-full h-full object-cover"
                   />
-                  <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-black/15 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                  <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/45 via-transparent to-black/15 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+
+                  {verifiedFilePath && (
+                    <div className="absolute bottom-4 left-4 px-3 py-1.5 rounded-md bg-[#231F1C]/80 text-[#FAF7F2] text-[11px] font-mono-tabular opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                      {verifiedFilePath}
+                    </div>
+                  )}
 
                   <div className="absolute bottom-4 right-4 flex items-center gap-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-200">
                     <button
                       type="button"
+                      disabled={isSavingAsset}
                       onClick={() => fileInputRef.current?.click()}
-                      className="px-3.5 py-2 text-xs font-medium bg-[#FAF7F2]/95 text-[#231F1C] rounded-lg shadow-sm hover:bg-white transition-colors whitespace-nowrap cursor-pointer"
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium bg-[#FAF7F2]/95 text-[#231F1C] rounded-lg shadow-sm hover:bg-white transition-colors whitespace-nowrap cursor-pointer"
                     >
-                      Replace GIF / Image
+                      {isSavingAsset ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Saving {uploadPercent > 0 ? `${uploadPercent}%` : 'Asset...'}</span>
+                        </>
+                      ) : (
+                        <span>Replace GIF / Image</span>
+                      )}
                     </button>
                     <button
                       type="button"
+                      disabled={isSavingAsset}
                       onClick={() => onUpdateGif(item.id, '')}
                       aria-label="Reset GIF slot"
                       className="p-2 text-xs font-medium bg-[#231F1C]/80 text-[#FAF7F2] rounded-lg hover:bg-[#231F1C] transition-colors cursor-pointer"
@@ -214,11 +240,24 @@ export const SignatureShowcaseItem: React.FC<SignatureShowcaseItemProps> = ({
                       <div className="flex flex-wrap items-center justify-center gap-3">
                         <button
                           type="button"
+                          disabled={isSavingAsset}
                           onClick={() => fileInputRef.current?.click()}
                           className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-medium bg-[#231F1C] text-[#FAF7F2] rounded-lg hover:bg-[#38322D] transition-colors whitespace-nowrap cursor-pointer shadow-sm"
                         >
-                          <Upload className="w-3.5 h-3.5" />
-                          <span>Upload GIF / Image</span>
+                          {isSavingAsset ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>
+                                Saving to /src/assets/images/
+                                {uploadPercent > 0 ? ` (${uploadPercent}%)` : '...'}
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <Upload className="w-3.5 h-3.5" />
+                              <span>Upload GIF / Image</span>
+                            </>
+                          )}
                         </button>
                         <button
                           type="button"
@@ -226,7 +265,7 @@ export const SignatureShowcaseItem: React.FC<SignatureShowcaseItemProps> = ({
                           className="inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-medium bg-[#FAF7F2]/90 text-[#231F1C] border border-[#231F1C]/15 rounded-lg hover:bg-white transition-colors whitespace-nowrap cursor-pointer"
                         >
                           <Link2 className="w-3.5 h-3.5" />
-                          <span>Paste GIF URL</span>
+                          <span>Paste Asset Path / URL</span>
                         </button>
                       </div>
                     ) : (
@@ -235,18 +274,19 @@ export const SignatureShowcaseItem: React.FC<SignatureShowcaseItemProps> = ({
                         className="flex items-center gap-2 max-w-sm mx-auto bg-[#FAF7F2] p-1.5 rounded-lg border border-[#231F1C]/15 shadow-sm"
                       >
                         <input
-                          type="url"
+                          type="text"
                           value={urlDraft}
                           onChange={(e) => setUrlDraft(e.target.value)}
-                          placeholder="https://.../your-animation.gif"
+                          placeholder="/src/assets/images/... or https://..."
                           className="flex-1 px-2.5 py-1.5 text-xs bg-transparent text-[#231F1C] placeholder:text-[#6E655C]/60 focus:outline-none"
                           autoFocus
                         />
                         <button
                           type="submit"
+                          disabled={isSavingAsset}
                           className="px-3 py-1.5 text-xs font-medium bg-[#7E5A3B] text-white rounded-md hover:bg-[#694A2F] transition-colors whitespace-nowrap"
                         >
-                          Load
+                          Save
                         </button>
                         <button
                           type="button"
@@ -260,7 +300,7 @@ export const SignatureShowcaseItem: React.FC<SignatureShowcaseItemProps> = ({
                   </div>
 
                   <div className="relative z-10 flex items-center justify-between text-[11px] text-[#6E655C]/90 border-t border-[#231F1C]/8 pt-3">
-                    <span>Animated GIF / Image Stage</span>
+                    <span>Target Path: {item.slotCodeName}</span>
                     <span>{item.servingNote}</span>
                   </div>
                 </div>
@@ -268,7 +308,7 @@ export const SignatureShowcaseItem: React.FC<SignatureShowcaseItemProps> = ({
             </div>
           </motion.div>
 
-          {/* MINIMAL DISH NAME & INTERACTION COLUMN (NO LONG DESCRIPTIONS) */}
+          {/* MINIMAL DISH NAME & INTERACTION COLUMN */}
           <motion.div
             style={{ y: contentY }}
             initial={{ opacity: 0, y: 24 }}

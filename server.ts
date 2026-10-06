@@ -13,6 +13,173 @@ const __dirname = path.dirname(__filename);
 
 const EXTRACTED_MENU_PATH = path.join(__dirname, 'src', 'data', 'extractedMenu.json');
 const CATEGORY_IMAGES_PATH = path.join(__dirname, 'src', 'data', 'categoryImages.json');
+const SIGNATURE_ASSETS_JSON_PATH = path.join(__dirname, 'src', 'data', 'signatureAssets.json');
+
+// Use the existing project asset folder: /src/assets/images
+const SIGNATURES_ASSETS_DIR = path.join(__dirname, 'src', 'assets', 'images');
+
+const SIGNATURE_SLUGS: Record<string, string> = {
+  'sig-1': 'beetroot-spinach-momos',
+  'sig-2': 'signature-mocktails',
+  'sig-3': 'makki-ki-roti-sarson-ka-saag',
+  'sig-4': 'himachali-siddu',
+};
+
+const SIGNATURE_KEYWORDS: Record<string, string[]> = {
+  'sig-1': ['beetroot', 'spinach', 'momo'],
+  'sig-2': ['mocktail'],
+  'sig-3': ['makki', 'sarson', 'saag'],
+  'sig-4': ['siddu', 'himachali'],
+};
+
+const ALLOWED_EXTS = ['gif', 'png', 'jpg', 'jpeg', 'webp', 'avif', 'svg'];
+
+function ensureDirectories() {
+  fs.mkdirSync(SIGNATURES_ASSETS_DIR, { recursive: true });
+  fs.mkdirSync(path.dirname(SIGNATURE_ASSETS_JSON_PATH), { recursive: true });
+}
+
+// Scans /src/assets/images/ for actual existing physical files and syncs /src/data/signatureAssets.json
+function syncAndReadSignatureAssets(): {
+  assets: Record<string, string>;
+  verifiedFiles: Record<
+    string,
+    { exists: boolean; filePath: string; fileName: string; publicUrl: string; sizeBytes: number }
+  >;
+} {
+  ensureDirectories();
+  const assets: Record<string, string> = {
+    'sig-1': '',
+    'sig-2': '',
+    'sig-3': '',
+    'sig-4': '',
+  };
+
+  try {
+    if (fs.existsSync(SIGNATURE_ASSETS_JSON_PATH)) {
+      const raw = fs.readFileSync(SIGNATURE_ASSETS_JSON_PATH, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        Object.assign(assets, parsed);
+      }
+    }
+  } catch (err) {
+    console.error('Error reading signatureAssets.json:', err);
+  }
+
+  // Also check if user dropped files directly into /src/assets/images/ with matching keywords
+  let dirEntries: string[] = [];
+  try {
+    dirEntries = fs.readdirSync(SIGNATURES_ASSETS_DIR);
+  } catch {
+    dirEntries = [];
+  }
+
+  const verifiedFiles: Record<
+    string,
+    { exists: boolean; filePath: string; fileName: string; publicUrl: string; sizeBytes: number }
+  > = {};
+
+  let changed = false;
+
+  for (const [id, slug] of Object.entries(SIGNATURE_SLUGS)) {
+    let foundFileName = '';
+    let foundSize = 0;
+
+    // 1. Check exact canonical filename first: <slug>.<ext> in /src/assets/images/
+    for (const ext of ALLOWED_EXTS) {
+      const candidateName = `${slug}.${ext}`;
+      const candidatePath = path.join(SIGNATURES_ASSETS_DIR, candidateName);
+      if (fs.existsSync(candidatePath)) {
+        const stat = fs.statSync(candidatePath);
+        if (stat.isFile() && stat.size > 0) {
+          foundFileName = candidateName;
+          foundSize = stat.size;
+          break;
+        }
+      }
+    }
+
+    // 2. If not found under exact slug, check if a real file in /src/assets/images/ matches this dish's keywords
+    if (!foundFileName) {
+      const keywords = SIGNATURE_KEYWORDS[id] || [];
+      for (const entry of dirEntries) {
+        const lower = entry.toLowerCase();
+        const ext = path.extname(lower).replace('.', '');
+        if (!ALLOWED_EXTS.includes(ext)) continue;
+        // Skip unrelated existing cafe images
+        if (
+          lower.startsWith('hero_shangaas_cafe') ||
+          lower.startsWith('story_cafe_craft') ||
+          lower.startsWith('menu_')
+        ) {
+          continue;
+        }
+        if (keywords.some((kw) => lower.includes(kw))) {
+          const fullPath = path.join(SIGNATURES_ASSETS_DIR, entry);
+          const stat = fs.statSync(fullPath);
+          if (stat.isFile() && stat.size > 0) {
+            const normalizedExt = ext === 'jpeg' ? 'jpg' : ext;
+            const canonicalName = `${slug}.${normalizedExt}`;
+            const canonicalPath = path.join(SIGNATURES_ASSETS_DIR, canonicalName);
+            if (fullPath !== canonicalPath) {
+              fs.copyFileSync(fullPath, canonicalPath);
+            }
+            foundFileName = canonicalName;
+            foundSize = stat.size;
+            break;
+          }
+        }
+      }
+    }
+
+    if (foundFileName) {
+      const assetUrl = `/src/assets/images/${foundFileName}`;
+      if (assets[id] !== assetUrl) {
+        assets[id] = assetUrl;
+        changed = true;
+      }
+      verifiedFiles[id] = {
+        exists: true,
+        filePath: `/src/assets/images/${foundFileName}`,
+        fileName: foundFileName,
+        publicUrl: assetUrl,
+        sizeBytes: foundSize,
+      };
+    } else {
+      // Do not keep any non-existent local path in signatureAssets.json
+      if (
+        assets[id] &&
+        (assets[id].startsWith('/src/assets/') || assets[id].startsWith('/assets/'))
+      ) {
+        assets[id] = '';
+        changed = true;
+      }
+      verifiedFiles[id] = {
+        exists: false,
+        filePath: '',
+        fileName: '',
+        publicUrl: '',
+        sizeBytes: 0,
+      };
+    }
+  }
+
+  if (changed) {
+    writeSignatureAssets(assets);
+  }
+
+  return { assets, verifiedFiles };
+}
+
+function writeSignatureAssets(assets: Record<string, string>) {
+  try {
+    ensureDirectories();
+    fs.writeFileSync(SIGNATURE_ASSETS_JSON_PATH, JSON.stringify(assets, null, 2) + '\n', 'utf-8');
+  } catch (err) {
+    console.error('Error writing signatureAssets.json:', err);
+  }
+}
 
 function readPersistedMenu(): any[] {
   try {
@@ -62,11 +229,210 @@ function writeCategoryImages(images: Record<string, string>) {
   }
 }
 
+function mimeOrNameToExt(mimeType?: string, fileName?: string): string {
+  const m = (mimeType || '').toLowerCase();
+  if (m.includes('gif')) return 'gif';
+  if (m.includes('png')) return 'png';
+  if (m.includes('webp')) return 'webp';
+  if (m.includes('svg')) return 'svg';
+  if (m.includes('avif')) return 'avif';
+  if (m.includes('jpeg') || m.includes('jpg')) return 'jpg';
+
+  if (fileName) {
+    const ext = path.extname(fileName).replace('.', '').toLowerCase();
+    if (ALLOWED_EXTS.includes(ext)) {
+      return ext === 'jpeg' ? 'jpg' : ext;
+    }
+  }
+  return 'gif';
+}
+
+function removeOtherExtensions(slug: string, keepFilePath: string) {
+  for (const ext of ALLOWED_EXTS) {
+    const candidate = path.join(SIGNATURES_ASSETS_DIR, `${slug}.${ext}`);
+    if (candidate !== keepFilePath && fs.existsSync(candidate)) {
+      try {
+        fs.unlinkSync(candidate);
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
 async function startServer() {
+  ensureDirectories();
+
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json({ limit: '50mb' }));
+  app.use(express.json({ limit: '250mb' }));
+
+  // Serve permanent assets directly from /src/assets/images in both dev and production
+  app.use(
+    '/src/assets/images',
+    express.static(SIGNATURES_ASSETS_DIR, {
+      etag: true,
+      maxAge: 0,
+    })
+  );
+
+  // Get verified permanent Signature Dish asset paths in /src/assets/images
+  app.get('/api/signature-assets', (_req, res) => {
+    const { assets, verifiedFiles } = syncAndReadSignatureAssets();
+    res.json({ assets, verifiedFiles });
+  });
+
+  // Chunked binary upload endpoint for large animated GIFs / images
+  // Writes directly to /src/assets/images/<slug>.<ext>
+  app.post('/api/signature-assets/chunk', (req, res) => {
+    try {
+      const { id, chunkIndex, totalChunks, mimeType, fileName, chunkBase64 } = req.body as {
+        id: string;
+        chunkIndex: number;
+        totalChunks: number;
+        mimeType?: string;
+        fileName?: string;
+        chunkBase64: string;
+      };
+
+      const slug = SIGNATURE_SLUGS[id];
+      if (!slug) {
+        res.status(400).json({ error: 'Invalid signature item id' });
+        return;
+      }
+
+      ensureDirectories();
+      const ext = mimeOrNameToExt(mimeType, fileName);
+      const partPath = path.join(SIGNATURES_ASSETS_DIR, `${slug}.${ext}.part`);
+      const finalFileName = `${slug}.${ext}`;
+      const finalFilePath = path.join(SIGNATURES_ASSETS_DIR, finalFileName);
+
+      const buffer = Buffer.from(chunkBase64, 'base64');
+
+      if (chunkIndex === 0) {
+        fs.writeFileSync(partPath, buffer);
+      } else {
+        fs.appendFileSync(partPath, buffer);
+      }
+
+      if (chunkIndex + 1 === totalChunks) {
+        removeOtherExtensions(slug, finalFilePath);
+        fs.renameSync(partPath, finalFilePath);
+
+        const { assets, verifiedFiles } = syncAndReadSignatureAssets();
+        const stableAssetPath = `/src/assets/images/${finalFileName}`;
+        assets[id] = stableAssetPath;
+        writeSignatureAssets(assets);
+
+        res.json({
+          ok: true,
+          done: true,
+          id,
+          assetPath: stableAssetPath,
+          filePath: `/src/assets/images/${finalFileName}`,
+          fileName: finalFileName,
+          sizeBytes: fs.statSync(finalFilePath).size,
+          assets,
+          verifiedFiles,
+        });
+      } else {
+        res.json({
+          ok: true,
+          done: false,
+          chunkIndex,
+        });
+      }
+    } catch (error: any) {
+      console.error('Error in chunked signature asset upload:', error);
+      res.status(500).json({ error: error?.message || 'Chunk upload failed' });
+    }
+  });
+
+  // Single-request upload or reset endpoint
+  app.post('/api/signature-assets', (req, res) => {
+    try {
+      const { id, dataUrl, externalUrl, fileName: rawFileName } = req.body as {
+        id: string;
+        dataUrl?: string;
+        externalUrl?: string;
+        fileName?: string;
+      };
+
+      const slug = SIGNATURE_SLUGS[id];
+      if (!slug) {
+        res.status(400).json({ error: 'Invalid signature item id' });
+        return;
+      }
+
+      ensureDirectories();
+
+      // Clear/reset slot if both dataUrl and externalUrl are empty
+      if (!dataUrl && !externalUrl) {
+        removeOtherExtensions(slug, '');
+        const { assets, verifiedFiles } = syncAndReadSignatureAssets();
+        assets[id] = '';
+        writeSignatureAssets(assets);
+        res.json({ ok: true, id, assetPath: '', assets, verifiedFiles });
+        return;
+      }
+
+      if (dataUrl && dataUrl.startsWith('data:')) {
+        const marker = ';base64,';
+        const markerIdx = dataUrl.indexOf(marker);
+        if (markerIdx === -1) {
+          res.status(400).json({ error: 'Malformed data URL' });
+          return;
+        }
+        const mimeType = dataUrl.slice(5, markerIdx);
+        const base64Data = dataUrl.slice(markerIdx + marker.length);
+        const ext = mimeOrNameToExt(mimeType, rawFileName);
+        const fileName = `${slug}.${ext}`;
+        const filePath = path.join(SIGNATURES_ASSETS_DIR, fileName);
+
+        removeOtherExtensions(slug, filePath);
+
+        const buffer = Buffer.from(base64Data, 'base64');
+        fs.writeFileSync(filePath, buffer);
+
+        const { assets, verifiedFiles } = syncAndReadSignatureAssets();
+        const stableAssetPath = `/src/assets/images/${fileName}`;
+        assets[id] = stableAssetPath;
+        writeSignatureAssets(assets);
+
+        res.json({
+          ok: true,
+          id,
+          assetPath: stableAssetPath,
+          filePath: `/src/assets/images/${fileName}`,
+          fileName,
+          sizeBytes: fs.statSync(filePath).size,
+          assets,
+          verifiedFiles,
+        });
+        return;
+      }
+
+      if (externalUrl) {
+        const { assets, verifiedFiles } = syncAndReadSignatureAssets();
+        assets[id] = externalUrl.trim();
+        writeSignatureAssets(assets);
+        res.json({
+          ok: true,
+          id,
+          assetPath: assets[id],
+          assets,
+          verifiedFiles,
+        });
+        return;
+      }
+
+      res.status(400).json({ error: 'No valid image payload provided' });
+    } catch (error: any) {
+      console.error('Error saving permanent signature asset:', error);
+      res.status(500).json({ error: error?.message || 'Failed to save signature asset' });
+    }
+  });
 
   app.get('/api/menu', (_req, res) => {
     const items = readPersistedMenu();
@@ -127,12 +493,13 @@ async function startServer() {
 
       const imageParts = photos
         .map((photo) => {
-          const match = photo.imageUrl?.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
-          if (!match) return null;
+          const marker = ';base64,';
+          const idx = photo.imageUrl?.indexOf(marker) ?? -1;
+          if (idx === -1) return null;
           return {
             inlineData: {
-              mimeType: match[1],
-              data: match[2],
+              mimeType: photo.imageUrl.slice(5, idx),
+              data: photo.imageUrl.slice(idx + marker.length),
             },
           };
         })
