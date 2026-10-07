@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { ImagePlus, ArrowRight, X, Check, Search } from 'lucide-react';
+import { ImagePlus, X, Check, Search } from 'lucide-react';
 import {
   ORIGINAL_MENU_CATEGORIES,
   OriginalMenuCategory,
   INITIAL_STATIC_MENU_ITEMS,
+  INITIAL_CATEGORY_IMAGES,
   StaticMenuItem,
 } from '../data/cafeData';
 
@@ -14,13 +15,26 @@ interface StaticMenuSectionProps {
 const MENU_ITEMS_STORAGE_KEY = 'shangaas_original_menu_items_v3';
 const CATEGORY_IMAGES_STORAGE_KEY = 'shangaas_category_images_v1';
 
+type CategoryFilterGroup = 'all' | 'veg' | 'non-veg' | 'beverages-desserts';
+
+const BEVERAGE_AND_DESSERT_CATEGORIES = new Set<OriginalMenuCategory>([
+  'Mocktails',
+  'Coffee',
+  'Tea',
+  'Kahwa',
+  'Cold Beverages',
+  'Shakes',
+  'Quenchers',
+  'Dessert',
+]);
+
 // Normalize category names so "Veg Momos" and "Veg Momo's" match seamlessly
 function normalizeCategoryKey(cat: string): string {
   return cat.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-// Compress uploaded category image on client so all 36 category images store reliably
-function compressImageFile(file: File, maxDim = 900, quality = 0.82): Promise<string> {
+// Read uploaded category image as Data URL so the server can write it to /src/assets/images/menu-<slug>.jpg
+function readImageFileAsDataUrl(file: File, maxDim = 1000, quality = 0.86): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -62,39 +76,74 @@ export const StaticMenuSection: React.FC<StaticMenuSectionProps> = ({ onAddToOrd
     return INITIAL_STATIC_MENU_ITEMS;
   });
 
-  // One representative image per category: Record<OriginalMenuCategory, string>
-  const [categoryImages, setCategoryImages] = useState<Record<string, string>>(() => {
-    try {
-      const saved = localStorage.getItem(CATEGORY_IMAGES_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed && typeof parsed === 'object') return parsed;
-      }
-    } catch {
-      // fallback
-    }
-    return {};
-  });
+  // Permanent project asset paths per category (/src/assets/images/menu-<slug>.jpg)
+  const [categoryImages, setCategoryImages] = useState<Record<string, string>>(
+    () => ({ ...INITIAL_CATEGORY_IMAGES })
+  );
 
   const [hoveredCategory, setHoveredCategory] = useState<OriginalMenuCategory | null>(null);
   const [activeCategoryModal, setActiveCategoryModal] = useState<OriginalMenuCategory | null>(null);
-  const [uploadTargetCategory, setUploadTargetCategory] = useState<OriginalMenuCategory | null>(null);
+  const [uploadTargetCategory, setUploadTargetCategory] = useState<OriginalMenuCategory | null>(
+    null
+  );
   const [searchQuery, setSearchQuery] = useState('');
+  const [activeFilter, setActiveFilter] = useState<CategoryFilterGroup>('all');
   const [addedItemId, setAddedItemId] = useState<string | null>(null);
 
   const categoryImageInputRef = useRef<HTMLInputElement>(null);
 
-  // Sync persisted category images & menu items from server if available
+  // Sync verified permanent category image files from server (/src/assets/images/menu-<slug>.jpg)
+  // and migrate any legacy localStorage base64 entries into physical repository files once
   useEffect(() => {
     let isMounted = true;
-    fetch('/api/category-images')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (isMounted && data?.images && Object.keys(data.images).length > 0) {
-          setCategoryImages((prev) => ({ ...prev, ...data.images }));
+
+    async function syncPermanentCategoryImages() {
+      try {
+        const legacyRaw = localStorage.getItem(CATEGORY_IMAGES_STORAGE_KEY);
+        if (legacyRaw) {
+          try {
+            const parsedLegacy = JSON.parse(legacyRaw);
+            if (parsedLegacy && typeof parsedLegacy === 'object') {
+              const hasBase64 = Object.values(parsedLegacy).some(
+                (v) => typeof v === 'string' && v.startsWith('data:image/')
+              );
+              if (hasBase64) {
+                const merged = { ...INITIAL_CATEGORY_IMAGES, ...parsedLegacy };
+                const postRes = await fetch('/api/category-images', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ images: merged }),
+                });
+                if (postRes.ok) {
+                  const postData = await postRes.json();
+                  if (isMounted && postData?.images) {
+                    setCategoryImages({ ...INITIAL_CATEGORY_IMAGES, ...postData.images });
+                  }
+                  localStorage.removeItem(CATEGORY_IMAGES_STORAGE_KEY);
+                  return;
+                }
+              } else {
+                localStorage.removeItem(CATEGORY_IMAGES_STORAGE_KEY);
+              }
+            }
+          } catch {
+            // ignore malformed storage
+          }
         }
-      })
-      .catch(() => {});
+
+        const res = await fetch('/api/category-images');
+        if (res.ok) {
+          const data = await res.json();
+          if (isMounted && data?.images && Object.keys(data.images).length > 0) {
+            setCategoryImages((prev) => ({ ...prev, ...data.images }));
+          }
+        }
+      } catch {
+        // Fallback to static INITIAL_CATEGORY_IMAGES from src/data/categoryImages.json
+      }
+    }
+
+    syncPermanentCategoryImages();
 
     fetch('/api/menu')
       .then((r) => (r.ok ? r.json() : null))
@@ -110,19 +159,31 @@ export const StaticMenuSection: React.FC<StaticMenuSectionProps> = ({ onAddToOrd
     };
   }, []);
 
-  const saveCategoryImagesMap = useCallback((updated: Record<string, string>) => {
-    setCategoryImages(updated);
-    try {
-      localStorage.setItem(CATEGORY_IMAGES_STORAGE_KEY, JSON.stringify(updated));
-    } catch {
-      // ignore storage quota
-    }
-    fetch('/api/category-images', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ images: updated }),
-    }).catch(() => {});
-  }, []);
+  const saveCategoryImagesMap = useCallback(
+    async (updated: Record<string, string>, changedCategory?: OriginalMenuCategory) => {
+      setCategoryImages(updated);
+      try {
+        const res = await fetch('/api/category-images', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ images: updated }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.images && typeof data.images === 'object') {
+            const nextMap = { ...data.images };
+            if (changedCategory && nextMap[changedCategory]) {
+              nextMap[changedCategory] = `${nextMap[changedCategory]}?v=${Date.now()}`;
+            }
+            setCategoryImages(nextMap);
+          }
+        }
+      } catch {
+        // ignore network error
+      }
+    },
+    []
+  );
 
   const handleTriggerCategoryImageUpload = (
     e: React.MouseEvent,
@@ -139,9 +200,14 @@ export const StaticMenuSection: React.FC<StaticMenuSectionProps> = ({ onAddToOrd
 
     const targetCat = uploadTargetCategory;
     try {
-      const dataUrl = await compressImageFile(file);
-      const updated = { ...categoryImages, [targetCat]: dataUrl };
-      saveCategoryImagesMap(updated);
+      const dataUrl = await readImageFileAsDataUrl(file);
+      // Strip any cache-busting query strings on other categories before persisting
+      const cleanCurrent: Record<string, string> = {};
+      for (const [k, v] of Object.entries(categoryImages)) {
+        cleanCurrent[k] = v.split('?')[0];
+      }
+      const updated = { ...cleanCurrent, [targetCat]: dataUrl };
+      await saveCategoryImagesMap(updated, targetCat);
     } catch {
       // ignore
     }
@@ -154,9 +220,13 @@ export const StaticMenuSection: React.FC<StaticMenuSectionProps> = ({ onAddToOrd
     category: OriginalMenuCategory
   ) => {
     e.stopPropagation();
-    const updated = { ...categoryImages };
-    delete updated[category];
-    saveCategoryImagesMap(updated);
+    const cleanCurrent: Record<string, string> = {};
+    for (const [k, v] of Object.entries(categoryImages)) {
+      if (k !== category) {
+        cleanCurrent[k] = v.split('?')[0];
+      }
+    }
+    saveCategoryImagesMap(cleanCurrent);
   };
 
   const getItemsForCategory = (category: OriginalMenuCategory): StaticMenuItem[] => {
@@ -164,7 +234,18 @@ export const StaticMenuSection: React.FC<StaticMenuSectionProps> = ({ onAddToOrd
     return menuItems.filter((item) => normalizeCategoryKey(item.category) === targetNorm);
   };
 
+  const matchesFilterGroup = (category: OriginalMenuCategory): boolean => {
+    if (activeFilter === 'all') return true;
+    const isBeverageOrDessert = BEVERAGE_AND_DESSERT_CATEGORIES.has(category);
+    const isNonVeg = category.toLowerCase().includes('non-veg');
+    if (activeFilter === 'beverages-desserts') return isBeverageOrDessert;
+    if (activeFilter === 'non-veg') return isNonVeg;
+    if (activeFilter === 'veg') return !isNonVeg && !isBeverageOrDessert;
+    return true;
+  };
+
   const filteredCategories = ORIGINAL_MENU_CATEGORIES.filter((cat) => {
+    if (!matchesFilterGroup(cat)) return false;
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     if (cat.toLowerCase().includes(q)) return true;
@@ -193,7 +274,7 @@ export const StaticMenuSection: React.FC<StaticMenuSectionProps> = ({ onAddToOrd
       aria-labelledby="menu-heading"
       className="py-20 lg:py-28 bg-[#F5F0E6] border-t border-[#231F1C]/8"
     >
-      {/* Hidden file input for "Add Category Image" */}
+      {/* Hidden file input for "Add / Change Category Image" */}
       <input
         ref={categoryImageInputRef}
         type="file"
@@ -203,9 +284,9 @@ export const StaticMenuSection: React.FC<StaticMenuSectionProps> = ({ onAddToOrd
         aria-label="Upload representative category image"
       />
 
-      <div className="max-w-[1360px] mx-auto px-6 sm:px-10 lg:px-14">
+      <div className="max-w-[1360px] mx-auto px-4 sm:px-10 lg:px-14">
         {/* Compact Menu Section Header */}
-        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-6 pb-10 border-b border-[#231F1C]/10">
+        <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6 pb-8 border-b border-[#231F1C]/10">
           <div>
             <p className="text-xs text-[#7E5A3B] font-medium mb-2">
               The Shangaas Cafe · Complete Category Menu
@@ -218,35 +299,82 @@ export const StaticMenuSection: React.FC<StaticMenuSectionProps> = ({ onAddToOrd
             </h2>
           </div>
 
-          <div className="relative w-full sm:w-72">
-            <Search className="w-3.5 h-3.5 text-[#6E655C] absolute left-3.5 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search category or dish..."
-              className="w-full pl-9 pr-3.5 py-2 text-xs bg-[#FAF7F2] border border-[#231F1C]/15 rounded-lg text-[#231F1C] focus:outline-none focus:border-[#7E5A3B]"
-            />
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full lg:w-auto">
+            {/* Quick Category Filter Tabs */}
+            <div
+              role="tablist"
+              aria-label="Filter menu categories"
+              className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 no-scrollbar"
+            >
+              {(
+                [
+                  { id: 'all', label: `All (${ORIGINAL_MENU_CATEGORIES.length})` },
+                  { id: 'veg', label: 'Veg Kitchen' },
+                  { id: 'non-veg', label: 'Non-Veg' },
+                  { id: 'beverages-desserts', label: 'Beverages & Desserts' },
+                ] as const
+              ).map((tab) => {
+                const isSelected = activeFilter === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={isSelected}
+                    onClick={() => setActiveFilter(tab.id)}
+                    className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
+                      isSelected
+                        ? 'bg-[#231F1C] text-[#FAF7F2]'
+                        : 'bg-[#FAF7F2] text-[#5C544D] hover:text-[#231F1C] border border-[#231F1C]/12'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Search Input */}
+            <div className="relative w-full sm:w-64">
+              <Search className="w-3.5 h-3.5 text-[#6E655C] absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search category or dish..."
+                className="w-full pl-9 pr-8 py-2 text-xs bg-[#FAF7F2] border border-[#231F1C]/15 rounded-lg text-[#231F1C] focus:outline-none focus:border-[#7E5A3B]"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  aria-label="Clear search"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#6E655C] hover:text-[#231F1C] cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* MAIN MENU SCREEN: COMPACT CATEGORY GRID (Mobile: 2 per row, Desktop: 3–4 per row) */}
-        <div className="mt-10 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
+        {/* MAIN MENU SCREEN: COMPACT CATEGORY GRID (Mobile: 2 per row, Tablet: 3–4 per row, Desktop: 5 per row) */}
+        <div className="mt-8 sm:mt-10 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3.5 sm:gap-4 lg:gap-5">
           {filteredCategories.map((category, idx) => {
             const catItems = getItemsForCategory(category);
             const repImage = categoryImages[category];
             const isHovered = hoveredCategory === category;
             const isNonVeg = category.toLowerCase().includes('non-veg');
-            const isRightColumnOnDesktop = (idx + 1) % 4 === 0;
+            const isRightColumnOnDesktop = idx % 5 >= 3;
 
             return (
               <div
                 key={category}
                 onMouseEnter={() => setHoveredCategory(category)}
                 onMouseLeave={() => setHoveredCategory(null)}
-                className="relative group"
+                className="relative group h-full"
               >
-                {/* CATEGORY CARD: [ONE REPRESENTATIVE IMAGE] + CATEGORY NAME + "View Menu →" */}
+                {/* CATEGORY CARD: [ONE REPRESENTATIVE IMAGE] + FULL CATEGORY NAME + "View Menu →" */}
                 <div
                   onClick={() => setActiveCategoryModal(category)}
                   role="button"
@@ -257,23 +385,24 @@ export const StaticMenuSection: React.FC<StaticMenuSectionProps> = ({ onAddToOrd
                       setActiveCategoryModal(category);
                     }
                   }}
-                  className="w-full text-left bg-[#FAF7F2] rounded-xl border border-[#231F1C]/10 overflow-hidden transition-all duration-200 hover:border-[#7E5A3B]/50 hover:shadow-[0_12px_32px_-12px_rgba(35,31,28,0.14)] cursor-pointer flex flex-col"
+                  className="w-full h-full text-left bg-[#FAF7F2] rounded-xl border border-[#231F1C]/12 overflow-hidden transition-all duration-200 hover:border-[#7E5A3B]/55 hover:shadow-[0_12px_32px_-12px_rgba(35,31,28,0.16)] cursor-pointer flex flex-col"
                 >
-                  {/* ONE REPRESENTATIVE IMAGE AREA */}
-                  <div className="relative aspect-[4/3] w-full bg-[#EFE9DF] border-b border-[#231F1C]/8 overflow-hidden flex items-center justify-center">
+                  {/* ONE REPRESENTATIVE IMAGE AREA — Slightly more compact height while preserving clear framing */}
+                  <div className="relative aspect-[5/4] sm:aspect-[4/3] w-full bg-[#EFE9DF] border-b border-[#231F1C]/8 overflow-hidden flex items-center justify-center shrink-0">
                     {repImage ? (
                       <>
                         <img
                           src={repImage}
                           alt={category}
+                          loading="lazy"
                           referrerPolicy="no-referrer"
-                          className="w-full h-full object-cover"
+                          className="w-full h-full object-cover object-center group-hover:scale-[1.03] transition-transform duration-500"
                         />
-                        <div className="absolute top-2.5 right-2.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                           <button
                             type="button"
                             onClick={(e) => handleTriggerCategoryImageUpload(e, category)}
-                            className="px-2.5 py-1 text-[11px] font-medium bg-[#FAF7F2]/95 text-[#231F1C] rounded-md shadow-xs hover:bg-white cursor-pointer"
+                            className="px-2 py-1 text-[10.5px] font-medium bg-[#FAF7F2]/95 text-[#231F1C] rounded-md shadow-xs hover:bg-white cursor-pointer"
                           >
                             Change Image
                           </button>
@@ -291,7 +420,7 @@ export const StaticMenuSection: React.FC<StaticMenuSectionProps> = ({ onAddToOrd
                       <button
                         type="button"
                         onClick={(e) => handleTriggerCategoryImageUpload(e, category)}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-[#5C544D] hover:text-[#231F1C] bg-[#FAF7F2]/90 hover:bg-white rounded-lg border border-[#231F1C]/12 transition-colors cursor-pointer shadow-2xs"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#5C544D] hover:text-[#231F1C] bg-[#FAF7F2]/90 hover:bg-white rounded-lg border border-[#231F1C]/12 transition-colors cursor-pointer shadow-2xs"
                       >
                         <ImagePlus className="w-3.5 h-3.5 text-[#7E5A3B]" />
                         <span>Add Category Image</span>
@@ -299,24 +428,24 @@ export const StaticMenuSection: React.FC<StaticMenuSectionProps> = ({ onAddToOrd
                     )}
                   </div>
 
-                  {/* CATEGORY NAME & "View Menu →" */}
-                  <div className="p-3.5 sm:p-4 flex flex-col justify-between flex-1">
-                    <div className="flex items-center gap-2 mb-2">
+                  {/* CATEGORY NAME & "View Menu →" — Prominent, bold, highly readable typography */}
+                  <div className="px-3.5 py-3.5 sm:px-4 sm:py-4 flex flex-col justify-between flex-1 gap-2.5">
+                    <div className="flex items-start gap-2">
                       <span
-                        className={`w-2 h-2 rounded-full shrink-0 ${
+                        className={`w-2.5 h-2.5 rounded-full shrink-0 mt-1.5 ${
                           isNonVeg ? 'bg-[#9E3B33]' : 'bg-[#3B6E4C]'
                         }`}
                         aria-hidden="true"
                       />
-                      <h3 className="font-display text-lg sm:text-xl text-[#231F1C] font-semibold tracking-tight uppercase leading-snug truncate">
+                      <h3 className="font-display text-[17px] sm:text-[19px] xl:text-[20px] text-[#1A1613] font-bold tracking-[0.015em] uppercase leading-[1.2] break-words">
                         {category}
                       </h3>
                     </div>
 
-                    <div className="flex items-center justify-between text-xs text-[#7E5A3B] font-medium pt-1">
+                    <div className="flex items-center justify-between text-xs text-[#7E5A3B] font-medium pt-2 border-t border-[#231F1C]/8">
                       <span>View Menu →</span>
                       <span className="font-mono-tabular text-[11px] text-[#6E655C]">
-                        {catItems.length}
+                        {catItems.length} {catItems.length === 1 ? 'item' : 'items'}
                       </span>
                     </div>
                   </div>
@@ -325,39 +454,41 @@ export const StaticMenuSection: React.FC<StaticMenuSectionProps> = ({ onAddToOrd
                 {/* DESKTOP HOVER PREVIEW POPOVER: Shows all varieties & exact prices on mouse hover */}
                 {isHovered && catItems.length > 0 && (
                   <div
-                    onClick={() => setActiveCategoryModal(category)}
-                    className={`hidden lg:block absolute z-30 top-full mt-2 w-80 bg-[#FAF7F2] rounded-xl border border-[#231F1C]/15 shadow-[0_24px_48px_-12px_rgba(35,31,28,0.25)] p-5 cursor-pointer ${
+                    className={`hidden lg:block absolute z-30 top-full pt-2 w-84 ${
                       isRightColumnOnDesktop ? 'right-0' : 'left-0'
                     }`}
                   >
-                    <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-[#231F1C]/12">
-                      <h4 className="font-display text-lg font-semibold text-[#231F1C] uppercase tracking-tight">
-                        {category}
-                      </h4>
-                      <span className="text-[11px] text-[#7E5A3B] font-medium">
-                        Click to expand
-                      </span>
-                    </div>
+                    <div
+                      onClick={() => setActiveCategoryModal(category)}
+                      className="bg-[#FAF7F2] rounded-xl border border-[#231F1C]/15 shadow-[0_24px_48px_-12px_rgba(35,31,28,0.25)] p-5 cursor-pointer"
+                    >
+                      <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-[#231F1C]/12 gap-2">
+                        <h4 className="font-display text-lg font-semibold text-[#231F1C] uppercase tracking-tight leading-snug">
+                          {category}
+                        </h4>
+                        <span className="text-[11px] text-[#7E5A3B] font-medium shrink-0">
+                          Click to expand
+                        </span>
+                      </div>
 
-                    <ul className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                      {catItems.map((item) => (
-                        <li
-                          key={item.id}
-                          className="flex items-baseline justify-between gap-2 text-xs text-[#231F1C]"
-                        >
-                          <span className="font-medium shrink-0 max-w-[58%] truncate">
-                            {item.name}
-                          </span>
-                          <span
-                            className="flex-1 border-b border-dotted border-[#231F1C]/25 mx-1"
-                            aria-hidden="true"
-                          />
-                          <span className="font-mono-tabular font-medium text-[#231F1C] shrink-0">
-                            {item.price}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
+                      <ul className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
+                        {catItems.map((item) => (
+                          <li
+                            key={item.id}
+                            className="flex items-baseline justify-between gap-2 text-xs text-[#231F1C]"
+                          >
+                            <span className="font-medium leading-snug">{item.name}</span>
+                            <span
+                              className="flex-1 border-b border-dotted border-[#231F1C]/25 mx-1 min-w-3"
+                              aria-hidden="true"
+                            />
+                            <span className="font-mono-tabular font-medium text-[#231F1C] shrink-0">
+                              {item.price}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   </div>
                 )}
               </div>
@@ -379,31 +510,29 @@ export const StaticMenuSection: React.FC<StaticMenuSectionProps> = ({ onAddToOrd
             className="w-full max-w-xl bg-[#FAF7F2] rounded-2xl border border-[#231F1C]/15 shadow-2xl overflow-hidden flex flex-col max-h-[88vh]"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Panel Header with Optional Category Representative Image */}
+            {/* Panel Header with Category Representative Image */}
             {categoryImages[activeCategoryModal] ? (
-              <div className="relative h-44 w-full bg-[#EFE9DF] border-b border-[#231F1C]/10 shrink-0">
+              <div className="relative h-52 sm:h-60 w-full bg-[#EFE9DF] border-b border-[#231F1C]/10 shrink-0">
                 <img
                   src={categoryImages[activeCategoryModal]}
                   alt={activeCategoryModal}
                   referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover"
+                  className="w-full h-full object-cover object-center"
                 />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/30 to-transparent" />
-                <div className="absolute bottom-4 left-6 right-6 flex items-end justify-between gap-4">
+                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent" />
+                <div className="absolute bottom-4 left-5 right-5 sm:left-6 sm:right-6 flex items-end justify-between gap-4">
                   <div>
                     <p className="text-[11px] text-[#E6D7C3] mb-0.5">
                       The Shangaas Cafe · Original Menu
                     </p>
-                    <h3 className="font-display text-2xl sm:text-3xl text-[#FAF7F2] font-semibold uppercase tracking-tight">
+                    <h3 className="font-display text-2xl sm:text-3xl text-[#FAF7F2] font-semibold uppercase tracking-tight leading-tight">
                       {activeCategoryModal}
                     </h3>
                   </div>
                   <button
                     type="button"
-                    onClick={(e) =>
-                      handleTriggerCategoryImageUpload(e, activeCategoryModal)
-                    }
-                    className="px-3 py-1.5 text-xs font-medium bg-[#FAF7F2]/90 text-[#231F1C] rounded-lg hover:bg-white cursor-pointer whitespace-nowrap"
+                    onClick={(e) => handleTriggerCategoryImageUpload(e, activeCategoryModal)}
+                    className="px-3 py-1.5 text-xs font-medium bg-[#FAF7F2]/90 text-[#231F1C] rounded-lg hover:bg-white cursor-pointer whitespace-nowrap shrink-0"
                   >
                     Change Category Image
                   </button>
@@ -429,9 +558,7 @@ export const StaticMenuSection: React.FC<StaticMenuSectionProps> = ({ onAddToOrd
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={(e) =>
-                      handleTriggerCategoryImageUpload(e, activeCategoryModal)
-                    }
+                    onClick={(e) => handleTriggerCategoryImageUpload(e, activeCategoryModal)}
                     className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-[#FAF7F2] text-[#231F1C] border border-[#231F1C]/15 rounded-lg hover:bg-white cursor-pointer whitespace-nowrap"
                   >
                     <ImagePlus className="w-3.5 h-3.5 text-[#7E5A3B]" />
@@ -450,7 +577,7 @@ export const StaticMenuSection: React.FC<StaticMenuSectionProps> = ({ onAddToOrd
             )}
 
             {/* Category Varieties & Exact Prices List */}
-            <div className="p-6 overflow-y-auto flex-1">
+            <div className="p-5 sm:p-6 overflow-y-auto flex-1">
               <ul className="divide-y divide-[#231F1C]/8">
                 {getItemsForCategory(activeCategoryModal).map((item) => {
                   const isRecentlyAdded = addedItemId === item.id;
@@ -462,13 +589,13 @@ export const StaticMenuSection: React.FC<StaticMenuSectionProps> = ({ onAddToOrd
                       <button
                         type="button"
                         onClick={() => handleOrderDish(item)}
-                        className="text-left font-medium text-sm sm:text-[15px] text-[#231F1C] hover:text-[#7E5A3B] transition-colors cursor-pointer"
+                        className="text-left font-medium text-sm sm:text-[15px] text-[#231F1C] hover:text-[#7E5A3B] transition-colors cursor-pointer leading-snug"
                       >
                         {item.name}
                       </button>
 
                       <span
-                        className="flex-1 border-b border-dotted border-[#231F1C]/20 mx-1"
+                        className="flex-1 border-b border-dotted border-[#231F1C]/20 mx-1 min-w-3"
                         aria-hidden="true"
                       />
 

@@ -144,7 +144,8 @@ function syncAndReadSignatureAssets(): {
         if (
           lower === LEGACY_AI_HERO_FILE ||
           lower.startsWith('story_cafe_craft') ||
-          lower.startsWith('menu_')
+          lower.startsWith('menu_') ||
+          lower.startsWith('menu-')
         ) {
           continue;
         }
@@ -301,28 +302,121 @@ function writePersistedMenu(items: any[]) {
   }
 }
 
-function readCategoryImages(): Record<string, string> {
+function categoryToSlug(cat: string): string {
+  return (
+    'menu-' +
+    cat
+      .toLowerCase()
+      .replace(/&/g, 'and')
+      .replace(/['’]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+  );
+}
+
+function syncAndReadCategoryImages(): Record<string, string> {
+  ensureDirectories();
+  const images: Record<string, string> = {};
+  let changed = false;
+
   try {
     if (fs.existsSync(CATEGORY_IMAGES_PATH)) {
       const raw = fs.readFileSync(CATEGORY_IMAGES_PATH, 'utf-8');
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object') {
-        return parsed;
+        Object.assign(images, parsed);
       }
     }
   } catch (err) {
     console.error('Error reading category images:', err);
   }
-  return {};
+
+  // Convert any base64 data URLs into physical files in /src/assets/images/menu-<slug>.<ext>
+  // and verify existing physical files on disk
+  for (const [category, val] of Object.entries(images)) {
+    const slug = categoryToSlug(category);
+    if (typeof val === 'string' && val.startsWith('data:image/')) {
+      const marker = ';base64,';
+      const markerIdx = val.indexOf(marker);
+      if (markerIdx !== -1) {
+        const mimeType = val.slice(5, markerIdx);
+        const base64Data = val.slice(markerIdx + marker.length);
+        const ext = mimeOrNameToExt(mimeType, `${slug}.jpg`);
+        const fileName = `${slug}.${ext}`;
+        const filePath = path.join(SIGNATURES_ASSETS_DIR, fileName);
+        removeOtherExtensions(slug, filePath);
+        fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
+        images[category] = `/src/assets/images/${fileName}`;
+        changed = true;
+      }
+    } else {
+      // Check if physical file exists for this category slug in /src/assets/images/
+      for (const ext of ALLOWED_EXTS) {
+        const candidateName = `${slug}.${ext}`;
+        const candidatePath = path.join(SIGNATURES_ASSETS_DIR, candidateName);
+        if (fs.existsSync(candidatePath) && fs.statSync(candidatePath).size > 0) {
+          const permanentPath = `/src/assets/images/${candidateName}`;
+          if (images[category] !== permanentPath) {
+            images[category] = permanentPath;
+            changed = true;
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  if (changed) {
+    try {
+      fs.writeFileSync(CATEGORY_IMAGES_PATH, JSON.stringify(images, null, 2) + '\n', 'utf-8');
+    } catch (err) {
+      console.error('Error writing category images:', err);
+    }
+  }
+
+  return images;
 }
 
-function writeCategoryImages(images: Record<string, string>) {
+function writeCategoryImages(incomingImages: Record<string, string>): Record<string, string> {
+  ensureDirectories();
+  const current = syncAndReadCategoryImages();
+  const updated: Record<string, string> = {};
+
+  for (const [category, val] of Object.entries(incomingImages)) {
+    const slug = categoryToSlug(category);
+    if (typeof val === 'string' && val.startsWith('data:image/')) {
+      const marker = ';base64,';
+      const markerIdx = val.indexOf(marker);
+      if (markerIdx !== -1) {
+        const mimeType = val.slice(5, markerIdx);
+        const base64Data = val.slice(markerIdx + marker.length);
+        const ext = mimeOrNameToExt(mimeType, `${slug}.jpg`);
+        const fileName = `${slug}.${ext}`;
+        const filePath = path.join(SIGNATURES_ASSETS_DIR, fileName);
+        removeOtherExtensions(slug, filePath);
+        fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
+        updated[category] = `/src/assets/images/${fileName}`;
+      }
+    } else if (typeof val === 'string' && val.trim() !== '') {
+      updated[category] = val.trim();
+    }
+  }
+
+  // If any category was removed, also remove its physical file
+  for (const existingCat of Object.keys(current)) {
+    if (!(existingCat in updated)) {
+      const slug = categoryToSlug(existingCat);
+      removeOtherExtensions(slug, '');
+    }
+  }
+
   try {
     fs.mkdirSync(path.dirname(CATEGORY_IMAGES_PATH), { recursive: true });
-    fs.writeFileSync(CATEGORY_IMAGES_PATH, JSON.stringify(images, null, 2), 'utf-8');
+    fs.writeFileSync(CATEGORY_IMAGES_PATH, JSON.stringify(updated, null, 2) + '\n', 'utf-8');
   } catch (err) {
     console.error('Error writing category images:', err);
   }
+  return updated;
 }
 
 function mimeOrNameToExt(mimeType?: string, fileName?: string): string {
@@ -557,7 +651,7 @@ async function startServer() {
   });
 
   app.get('/api/category-images', (_req, res) => {
-    const images = readCategoryImages();
+    const images = syncAndReadCategoryImages();
     res.json({ images });
   });
 
@@ -567,8 +661,8 @@ async function startServer() {
       res.status(400).json({ error: 'Invalid images map' });
       return;
     }
-    writeCategoryImages(images);
-    res.json({ ok: true });
+    const persisted = writeCategoryImages(images);
+    res.json({ ok: true, images: persisted });
   });
 
   app.post('/api/extract-menu-from-photos', async (req, res) => {

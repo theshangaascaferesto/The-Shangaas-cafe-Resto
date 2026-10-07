@@ -541,12 +541,6 @@ export default function App() {
             Our Menu
           </a>
           <a
-            href="#story"
-            className="hover:text-[#231F1C] underline-offset-4 hover:underline transition-colors whitespace-nowrap"
-          >
-            Story
-          </a>
-          <a
             href="#gallery"
             className="hover:text-[#231F1C] underline-offset-4 hover:underline transition-colors whitespace-nowrap"
           >
@@ -807,36 +801,6 @@ export default function App() {
 
         {/* ORIGINAL MENU SECTION */}
         <StaticMenuSection onAddToOrder={handleAddToOrder} />
-
-        {/* 1. CAFE STORY SECTION — MINIMAL & ELEGANT */}
-        <section
-          id="story"
-          aria-labelledby="story-heading"
-          className="py-24 lg:py-32 bg-[#FAF7F2] border-t border-[#231F1C]/8"
-        >
-          <div className="max-w-[1360px] mx-auto px-6 sm:px-10 lg:px-14">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 lg:gap-16 items-center">
-              <div className="lg:col-span-6">
-                <div className="aspect-[4/3] rounded-2xl overflow-hidden bg-[#EFE9DF] border border-[#231F1C]/10">
-                  <StaticCulinaryImage
-                    src="/src/assets/images/story_cafe_craft_1791188576579.jpg"
-                    alt="The Shangaas Cafe interior and preparation counter"
-                    className="w-full h-full object-cover"
-                  />
-                </div>
-              </div>
-
-              <div className="lg:col-span-6">
-                <h2
-                  id="story-heading"
-                  className="font-display text-3xl sm:text-5xl text-[#231F1C] font-normal leading-[1.15] [text-wrap:balance]"
-                >
-                  “Destination for every craving, from morning breakfast to evening dining.”
-                </h2>
-              </div>
-            </div>
-          </div>
-        </section>
 
         {/* 3. GALLERY SECTION — REPLACEABLE ORIGINAL CAFE PHOTO SLOTS */}
         <section
@@ -1156,9 +1120,6 @@ export default function App() {
             </a>
             <a href="#menu" className="hover:text-[#231F1C] transition-colors">
               Original Menu
-            </a>
-            <a href="#story" className="hover:text-[#231F1C] transition-colors">
-              Story
             </a>
             <button
               type="button"
