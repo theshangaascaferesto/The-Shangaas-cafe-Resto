@@ -474,7 +474,7 @@ export const INITIAL_GALLERY_ITEMS: GalleryItem[] = [
     caption: '',
     category: 'The Shangaas Cafe',
     aspect: 'wide',
-    imageUrl: '',
+    imageUrl: (signatureAssets as Record<string, string>)['gal-1'] || '',
   },
   {
     id: 'gal-2',
@@ -482,7 +482,7 @@ export const INITIAL_GALLERY_ITEMS: GalleryItem[] = [
     caption: '',
     category: 'The Shangaas Cafe',
     aspect: 'standard',
-    imageUrl: '',
+    imageUrl: (signatureAssets as Record<string, string>)['gal-2'] || '',
   },
   {
     id: 'gal-3',
@@ -490,7 +490,7 @@ export const INITIAL_GALLERY_ITEMS: GalleryItem[] = [
     caption: '',
     category: 'The Shangaas Cafe',
     aspect: 'standard',
-    imageUrl: '',
+    imageUrl: (signatureAssets as Record<string, string>)['gal-3'] || '',
   },
   {
     id: 'gal-4',
@@ -498,7 +498,7 @@ export const INITIAL_GALLERY_ITEMS: GalleryItem[] = [
     caption: '',
     category: 'The Shangaas Cafe',
     aspect: 'standard',
-    imageUrl: '',
+    imageUrl: (signatureAssets as Record<string, string>)['gal-4'] || '',
   },
   {
     id: 'gal-5',
@@ -506,7 +506,7 @@ export const INITIAL_GALLERY_ITEMS: GalleryItem[] = [
     caption: '',
     category: 'The Shangaas Cafe',
     aspect: 'standard',
-    imageUrl: '',
+    imageUrl: (signatureAssets as Record<string, string>)['gal-5'] || '',
   },
   {
     id: 'gal-6',
@@ -514,6 +514,6 @@ export const INITIAL_GALLERY_ITEMS: GalleryItem[] = [
     caption: '',
     category: 'The Shangaas Cafe',
     aspect: 'wide',
-    imageUrl: '',
+    imageUrl: (signatureAssets as Record<string, string>)['gal-6'] || '',
   },
 ];

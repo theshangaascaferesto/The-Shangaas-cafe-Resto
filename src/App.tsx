@@ -45,20 +45,8 @@ export default function App() {
     Record<string, { exists: boolean; filePath: string; publicUrl: string; sizeBytes: number }>
   >({});
 
-  const [galleryItems, setGalleryItems] = useState<GalleryItem[]>(() => {
-    try {
-      const saved = localStorage.getItem(GALLERY_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
-        }
-      }
-    } catch {
-      // Fallback to initial gallery items
-    }
-    return INITIAL_GALLERY_ITEMS;
-  });
+  const [galleryItems, setGalleryItems] = useState<GalleryItem[]>(INITIAL_GALLERY_ITEMS);
+  const [uploadingGallerySlotId, setUploadingGallerySlotId] = useState<string | null>(null);
 
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
   const [isOrderOpen, setIsOrderOpen] = useState(false);
@@ -74,14 +62,14 @@ export default function App() {
   const gallerySlotUploadRef = useRef<HTMLInputElement>(null);
   const galleryBatchUploadRef = useRef<HTMLInputElement>(null);
 
-  // Load permanent signature asset paths from project repository (/src/data/signatureAssets.json)
-  // and ensure actual uploaded files exist physically inside /public/assets/signatures/
+  // Load permanent asset paths from project repository (/src/data/signatureAssets.json)
+  // and migrate any browser-stored Signature or Gallery images into physical /src/assets/images/ files
   useEffect(() => {
     let isMounted = true;
 
     async function syncPermanentSignatureAssets() {
       try {
-        // 1. Migrate any legacy localStorage signature images into physical /public/assets/signatures/ files
+        // 1a. Migrate any legacy localStorage signature images into physical /src/assets/images/ files
         const legacyKeys = [
           'shangaas_cafe_signature_items_v3',
           'shangaas_cafe_signature_items_v2',
@@ -131,7 +119,64 @@ export default function App() {
           }
         }
 
-        // 2. Check current physical files in /public/assets/signatures/
+        // 1b. Migrate any existing localStorage Gallery images into physical /src/assets/images/gallery-photo-01..NN files
+        const legacyGalleryKeys = [
+          GALLERY_STORAGE_KEY,
+          'shangaas_cafe_gallery_items_v2',
+          'shangaas_cafe_gallery_items_v1',
+          'shangaas_cafe_gallery_items',
+        ];
+        for (const gKey of legacyGalleryKeys) {
+          const rawGal = localStorage.getItem(gKey);
+          if (rawGal) {
+            let allGalSaved = true;
+            try {
+              const parsedGal = JSON.parse(rawGal);
+              if (Array.isArray(parsedGal)) {
+                for (let idx = 0; idx < parsedGal.length; idx++) {
+                  const galItem = parsedGal[idx];
+                  const canonicalGalId =
+                    typeof galItem?.id === 'string' && /^gal-\d+$/.test(galItem.id)
+                      ? galItem.id
+                      : `gal-${idx + 1}`;
+
+                  if (
+                    typeof galItem?.imageUrl === 'string' &&
+                    galItem.imageUrl.startsWith('data:image/')
+                  ) {
+                    const res = await fetch(galItem.imageUrl);
+                    const blob = await res.blob();
+                    const ext = (blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+                    const fileName = `gallery-photo-${String(idx + 1).padStart(2, '0')}.${ext}`;
+                    const uploaded = await uploadSignatureFileChunked(
+                      canonicalGalId,
+                      blob,
+                      fileName,
+                      blob.type || 'image/jpeg'
+                    );
+                    if (uploaded) {
+                      await saveSignatureFileToIdb(
+                        canonicalGalId,
+                        blob,
+                        fileName,
+                        blob.type || 'image/jpeg'
+                      );
+                    } else {
+                      allGalSaved = false;
+                    }
+                  }
+                }
+              }
+            } catch {
+              allGalSaved = false;
+            }
+            if (allGalSaved) {
+              localStorage.removeItem(gKey);
+            }
+          }
+        }
+
+        // 2. Check current physical files in /src/assets/images/
         const checkRes = await fetch('/api/signature-assets');
         if (checkRes.ok) {
           const checkData = await checkRes.json();
@@ -173,6 +218,24 @@ export default function App() {
             }
           }
 
+          for (let gIdx = 1; gIdx <= 12; gIdx++) {
+            const galId = `gal-${gIdx}`;
+            if (!currentVerified[galId]?.exists) {
+              const idbRecord = await getSignatureFileFromIdb(galId);
+              if (idbRecord) {
+                const uploaded = await uploadSignatureFileChunked(
+                  galId,
+                  idbRecord.blob,
+                  idbRecord.fileName,
+                  idbRecord.mimeType
+                );
+                if (uploaded) {
+                  restoredAny = true;
+                }
+              }
+            }
+          }
+
           const finalRes = restoredAny ? await fetch('/api/signature-assets') : checkRes;
           const finalData = restoredAny && finalRes.ok ? await finalRes.json() : checkData;
 
@@ -189,6 +252,33 @@ export default function App() {
                 gifUrl: finalData.assets[item.id] || '',
               }))
             );
+
+            // Sync gallery items from verified repository assets (/src/assets/images/gallery-photo-01..NN)
+            setGalleryItems((prev) => {
+              const baseItems = prev.map((item) => ({
+                ...item,
+                imageUrl: finalData.assets[item.id] || '',
+              }));
+              // Also append any extra gallery-photo-07+ assets if present on disk
+              const extraKeys = Object.keys(finalData.assets)
+                .filter((k) => /^gal-\d+$/.test(k) && Number(k.split('-')[1]) > baseItems.length)
+                .sort((a, b) => Number(a.split('-')[1]) - Number(b.split('-')[1]));
+
+              for (const extraId of extraKeys) {
+                if (finalData.assets[extraId]) {
+                  const num = Number(extraId.split('-')[1]);
+                  baseItems.push({
+                    id: extraId,
+                    title: `Gallery Photo ${String(num).padStart(2, '0')}`,
+                    caption: '',
+                    category: 'The Shangaas Cafe',
+                    aspect: 'standard',
+                    imageUrl: finalData.assets[extraId],
+                  });
+                }
+              }
+              return baseItems;
+            });
           }
         }
       } catch {
@@ -202,32 +292,45 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(GALLERY_STORAGE_KEY, JSON.stringify(galleryItems));
-    } catch {
-      // Ignore storage quota issues
-    }
-  }, [galleryItems]);
-
   const handleUploadSignatureFile = async (
     id: string,
     file: File,
     onProgress?: (pct: number) => void
   ) => {
     try {
-      await saveSignatureFileToIdb(id, file, file.name, file.type || 'image/gif');
+      await saveSignatureFileToIdb(id, file, file.name, file.type || 'image/jpeg');
       const result = await uploadSignatureFileChunked(
         id,
         file,
         file.name,
-        file.type || 'image/gif',
+        file.type || 'image/jpeg',
         onProgress
       );
       if (result && result.assetPath) {
         const displayUrl = `${result.assetPath}?v=${Date.now()}`;
         if (id === 'hero') {
           setHeroImageUrl(displayUrl);
+        } else if (id.startsWith('gal-')) {
+          setGalleryItems((prev) => {
+            const existsInList = prev.some((item) => item.id === id);
+            if (existsInList) {
+              return prev.map((item) =>
+                item.id === id ? { ...item, imageUrl: displayUrl } : item
+              );
+            }
+            const num = Number(id.split('-')[1]) || prev.length + 1;
+            return [
+              ...prev,
+              {
+                id,
+                title: `Gallery Photo ${String(num).padStart(2, '0')}`,
+                caption: '',
+                category: 'The Shangaas Cafe',
+                aspect: 'standard',
+                imageUrl: displayUrl,
+              },
+            ];
+          });
         } else {
           setSignatureItems((prev) =>
             prev.map((item) => (item.id === id ? { ...item, gifUrl: displayUrl } : item))
@@ -244,7 +347,7 @@ export default function App() {
         }));
       }
     } catch (err) {
-      console.error('Failed to upload signature file to repository:', err);
+      console.error('Failed to upload asset file to repository:', err);
     }
   };
 
@@ -272,12 +375,18 @@ export default function App() {
         const displayUrl = permanentPath
           ? `${permanentPath}?v=${Date.now()}`
           : '';
-        setSignatureItems((prev) =>
-          prev.map((item) => (item.id === id ? { ...item, gifUrl: displayUrl } : item))
-        );
+        if (id.startsWith('gal-')) {
+          setGalleryItems((prev) =>
+            prev.map((item) => (item.id === id ? { ...item, imageUrl: displayUrl } : item))
+          );
+        } else {
+          setSignatureItems((prev) =>
+            prev.map((item) => (item.id === id ? { ...item, gifUrl: displayUrl } : item))
+          );
+        }
       }
     } catch (err) {
-      console.error('Failed to persist signature asset:', err);
+      console.error('Failed to persist asset:', err);
     }
   };
 
@@ -299,71 +408,65 @@ export default function App() {
     gallerySlotUploadRef.current?.click();
   };
 
-  const handleGallerySlotFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleGallerySlotFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file || !activeGallerySlotId) return;
 
     const targetId = activeGallerySlotId;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        const dataUrl = reader.result;
-        setGalleryItems((prev) =>
-          prev.map((item) =>
-            item.id === targetId ? { ...item, imageUrl: dataUrl } : item
-          )
-        );
-      }
-    };
-    reader.readAsDataURL(file);
-    e.target.value = '';
     setActiveGallerySlotId(null);
+    setUploadingGallerySlotId(targetId);
+    try {
+      await handleUploadSignatureFile(targetId, file);
+    } finally {
+      setUploadingGallerySlotId(null);
+    }
   };
 
-  const handleClearGallerySlot = (e: React.MouseEvent, slotId: string) => {
+  const handleClearGallerySlot = async (e: React.MouseEvent, slotId: string) => {
     e.stopPropagation();
-    setGalleryItems((prev) =>
-      prev.map((item) => (item.id === slotId ? { ...item, imageUrl: '' } : item))
-    );
+    setUploadingGallerySlotId(slotId);
+    try {
+      await handleUpdateGif(slotId, '');
+    } finally {
+      setUploadingGallerySlotId(null);
+    }
   };
 
-  const handleGalleryBatchUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    Array.from(files).forEach((file, idx) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          const dataUrl = reader.result;
-          setGalleryItems((prev) => {
-            // Fill first empty slot if available, otherwise append
-            const emptyIndex = prev.findIndex((g) => !g.imageUrl);
-            if (emptyIndex !== -1) {
-              const copy = [...prev];
-              copy[emptyIndex] = {
-                ...copy[emptyIndex],
-                imageUrl: dataUrl,
-              };
-              return copy;
-            }
-            return [
-              ...prev,
-              {
-                id: `orig-gal-${Date.now()}-${idx}`,
-                title: `Gallery Photo ${String(prev.length + 1).padStart(2, '0')}`,
-                caption: '',
-                category: 'The Shangaas Cafe',
-                aspect: 'standard',
-                imageUrl: dataUrl,
-              },
-            ];
-          });
-        }
-      };
-      reader.readAsDataURL(file);
-    });
+  const handleGalleryBatchUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+    const files = Array.from(fileList);
     e.target.value = '';
+
+    // Determine target gal-<N> slot IDs in order: fill empty slots first, then append new gal-<N> slots
+    const usedIds = new Set(
+      galleryItems.filter((g) => Boolean(g.imageUrl)).map((g) => g.id)
+    );
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      let targetSlotId = '';
+      for (let slotNum = 1; slotNum <= Math.max(6, galleryItems.length + i + 1); slotNum++) {
+        const candidateId = `gal-${slotNum}`;
+        if (!usedIds.has(candidateId)) {
+          targetSlotId = candidateId;
+          usedIds.add(candidateId);
+          break;
+        }
+      }
+      if (!targetSlotId) {
+        targetSlotId = `gal-${galleryItems.length + i + 1}`;
+        usedIds.add(targetSlotId);
+      }
+
+      setUploadingGallerySlotId(targetSlotId);
+      try {
+        await handleUploadSignatureFile(targetSlotId, file);
+      } finally {
+        setUploadingGallerySlotId(null);
+      }
+    }
   };
 
   const handleAddToOrder = (newItem: {
@@ -791,9 +894,23 @@ export default function App() {
               {galleryItems.map((item, idx) => {
                 const colSpan =
                   idx % 6 === 0 || idx % 6 === 5 ? 'md:col-span-8' : 'md:col-span-4';
+                const isSavingSlot = uploadingGallerySlotId === item.id;
                 return (
                   <div
                     key={item.id}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={async (e) => {
+                      e.preventDefault();
+                      const file = e.dataTransfer.files?.[0];
+                      if (file && file.type.startsWith('image/')) {
+                        setUploadingGallerySlotId(item.id);
+                        try {
+                          await handleUploadSignatureFile(item.id, file);
+                        } finally {
+                          setUploadingGallerySlotId(null);
+                        }
+                      }
+                    }}
                     onClick={() => {
                       if (item.imageUrl) {
                         setActiveGalleryModal(item);
@@ -815,13 +932,22 @@ export default function App() {
                           <div className="absolute top-3 right-3 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                             <button
                               type="button"
+                              disabled={isSavingSlot}
                               onClick={(e) => handleTriggerGallerySlotUpload(e, item.id)}
-                              className="px-3 py-1.5 text-xs font-medium bg-[#FAF7F2]/95 text-[#231F1C] rounded-lg shadow-sm hover:bg-white cursor-pointer"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-[#FAF7F2]/95 text-[#231F1C] rounded-lg shadow-sm hover:bg-white cursor-pointer"
                             >
-                              Replace Photo
+                              {isSavingSlot ? (
+                                <>
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  <span>Saving...</span>
+                                </>
+                              ) : (
+                                <span>Replace Photo</span>
+                              )}
                             </button>
                             <button
                               type="button"
+                              disabled={isSavingSlot}
                               onClick={(e) => handleClearGallerySlot(e, item.id)}
                               aria-label="Remove gallery photo"
                               className="p-1.5 bg-[#231F1C]/80 text-[#FAF7F2] rounded-lg hover:bg-[#231F1C] cursor-pointer"
@@ -837,11 +963,21 @@ export default function App() {
                           </p>
                           <button
                             type="button"
+                            disabled={isSavingSlot}
                             onClick={(e) => handleTriggerGallerySlotUpload(e, item.id)}
                             className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium bg-[#FAF7F2] text-[#231F1C] border border-[#231F1C]/15 rounded-lg hover:bg-white transition-colors cursor-pointer shadow-2xs"
                           >
-                            <ImagePlus className="w-3.5 h-3.5 text-[#7E5A3B]" />
-                            <span>Add Gallery Image</span>
+                            {isSavingSlot ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#7E5A3B]" />
+                                <span>Saving to /src/assets/images/...</span>
+                              </>
+                            ) : (
+                              <>
+                                <ImagePlus className="w-3.5 h-3.5 text-[#7E5A3B]" />
+                                <span>Add Gallery Image</span>
+                              </>
+                            )}
                           </button>
                         </div>
                       )}

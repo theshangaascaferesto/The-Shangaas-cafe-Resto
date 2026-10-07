@@ -24,7 +24,23 @@ const SIGNATURE_SLUGS: Record<string, string> = {
   'sig-2': 'signature-mocktails',
   'sig-3': 'makki-ki-roti-sarson-ka-saag',
   'sig-4': 'himachali-siddu',
+  'gal-1': 'gallery-photo-01',
+  'gal-2': 'gallery-photo-02',
+  'gal-3': 'gallery-photo-03',
+  'gal-4': 'gallery-photo-04',
+  'gal-5': 'gallery-photo-05',
+  'gal-6': 'gallery-photo-06',
 };
+
+function getSlugForId(id: string): string | undefined {
+  if (SIGNATURE_SLUGS[id]) return SIGNATURE_SLUGS[id];
+  const galMatch = id.match(/^gal-(\d+)$/);
+  if (galMatch) {
+    const num = String(Number(galMatch[1])).padStart(2, '0');
+    return `gallery-photo-${num}`;
+  }
+  return undefined;
+}
 
 const SIGNATURE_KEYWORDS: Record<string, string[]> = {
   hero: ['hero-shangaas-cafe', 'hero_background', 'hero-background', 'cafe-hero'],
@@ -32,6 +48,12 @@ const SIGNATURE_KEYWORDS: Record<string, string[]> = {
   'sig-2': ['mocktail'],
   'sig-3': ['makki', 'sarson', 'saag'],
   'sig-4': ['siddu', 'himachali'],
+  'gal-1': ['gallery-photo-01', 'gallery_01', 'gallery-1'],
+  'gal-2': ['gallery-photo-02', 'gallery_02', 'gallery-2'],
+  'gal-3': ['gallery-photo-03', 'gallery_03', 'gallery-3'],
+  'gal-4': ['gallery-photo-04', 'gallery_04', 'gallery-4'],
+  'gal-5': ['gallery-photo-05', 'gallery_05', 'gallery-5'],
+  'gal-6': ['gallery-photo-06', 'gallery_06', 'gallery-6'],
 };
 
 const LEGACY_AI_HERO_FILE = 'hero_shangaas_cafe_1791188557404.jpg';
@@ -58,6 +80,12 @@ function syncAndReadSignatureAssets(): {
     'sig-2': '',
     'sig-3': '',
     'sig-4': '',
+    'gal-1': '',
+    'gal-2': '',
+    'gal-3': '',
+    'gal-4': '',
+    'gal-5': '',
+    'gal-6': '',
   };
 
   try {
@@ -205,6 +233,34 @@ function syncAndReadSignatureAssets(): {
     }
   }
 
+  // Also scan any additional gallery-photo-<NN>.<ext> files (e.g. gal-7, gal-8, etc.)
+  for (const entry of dirEntries) {
+    const match = entry.match(/^gallery-photo-(\d+)\.([a-z0-9]+)$/i);
+    if (match) {
+      const idxNum = Number(match[1]);
+      const ext = match[2].toLowerCase();
+      if (idxNum > 6 && ALLOWED_EXTS.includes(ext)) {
+        const galId = `gal-${idxNum}`;
+        const fullPath = path.join(SIGNATURES_ASSETS_DIR, entry);
+        const stat = fs.statSync(fullPath);
+        if (stat.isFile() && stat.size > 0) {
+          const assetUrl = `/src/assets/images/${entry}`;
+          if (assets[galId] !== assetUrl) {
+            assets[galId] = assetUrl;
+            changed = true;
+          }
+          verifiedFiles[galId] = {
+            exists: true,
+            filePath: assetUrl,
+            fileName: entry,
+            publicUrl: assetUrl,
+            sizeBytes: stat.size,
+          };
+        }
+      }
+    }
+  }
+
   if (changed) {
     writeSignatureAssets(assets);
   }
@@ -336,9 +392,9 @@ async function startServer() {
         chunkBase64: string;
       };
 
-      const slug = SIGNATURE_SLUGS[id];
+      const slug = getSlugForId(id);
       if (!slug) {
-        res.status(400).json({ error: 'Invalid signature item id' });
+        res.status(400).json({ error: 'Invalid signature or gallery item id' });
         return;
       }
 
@@ -410,9 +466,9 @@ async function startServer() {
         fileName?: string;
       };
 
-      const slug = SIGNATURE_SLUGS[id];
+      const slug = getSlugForId(id);
       if (!slug) {
-        res.status(400).json({ error: 'Invalid signature item id' });
+        res.status(400).json({ error: 'Invalid signature or gallery item id' });
         return;
       }
 
